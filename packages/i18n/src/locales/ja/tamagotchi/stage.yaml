@@ -14,6 +14,7 @@ docs:
     disable: 常に表示
   'open-settings': 設定を開く
   'open-chat': チャットを開く
+  'open-project-board': プロジェクトダッシュボードを開く
   'refresh': 再読み込み
   'open-hearing-controls': 聴覚コントロールを開く
   'drag-to-move-window': ウィンドウをドラッグして移動

@@ -76,6 +76,8 @@ components.d.ts
 **/server/public/*
 **/public/assets/js/*
 **/assets/live2d/models/*
+!packages/stage-ui/src/assets/live2d/models/mao/
+!packages/stage-ui/src/assets/live2d/models/mao/**
 **/assets/vrm/models/*
 
 # Serving fonts locally

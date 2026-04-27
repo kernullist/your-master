@@ -14,6 +14,7 @@ docs:
     disable: 總是顯示
   'open-settings': 開啟設定
   'open-chat': 打開聊天
+  'open-project-board': 開啟專案儀表板
   'refresh': 重新整理
   'open-hearing-controls': 開啟聽力控制
   'drag-to-move-window': 長按以移動視窗

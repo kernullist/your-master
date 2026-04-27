@@ -14,6 +14,7 @@ docs:
     disable: Toujours afficher
   'open-settings': Ouvrir les paramètres
   'open-chat': Ouvrir le Chat
+  'open-project-board': Ouvrir le tableau du projet
   'refresh': Actualiser
   'open-hearing-controls': Ouvrir les contrôles d'écoute
   'drag-to-move-window': Glisser pour déplacer la fenêtre

@@ -62,6 +62,7 @@
     "@proj-airi/server-sdk": "workspace:*",
     "@proj-airi/stage-layouts": "workspace:^",
     "@proj-airi/stage-pages": "workspace:^",
+    "@proj-airi/stage-projects": "workspace:*",
     "@proj-airi/stage-ui": "workspace:^",
     "@proj-airi/stage-ui-live2d": "workspace:^",
     "@proj-airi/stage-ui-three": "workspace:^",

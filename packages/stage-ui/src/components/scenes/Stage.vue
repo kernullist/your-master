@@ -84,7 +84,6 @@ const chatHookCleanups: Array<() => void> = []
 
 const providersStore = useProvidersStore()
 useAuthProviderSync()
-const live2dStore = useLive2d()
 const showStage = ref(true)
 const viewUpdateCleanups: Array<() => void> = []
 
@@ -99,14 +98,6 @@ type PresentEvent
   = | { type: 'assistant-reset' }
     | { type: 'assistant-append', text: string }
 const { post: postPresent } = useBroadcastChannel<PresentEvent, PresentEvent>({ name: 'airi-chat-present' })
-
-viewUpdateCleanups.push(live2dStore.onShouldUpdateView(async () => {
-  showStage.value = false
-  await settingsStore.updateStageModel()
-  setTimeout(() => {
-    showStage.value = true
-  }, 100)
-}))
 
 const audioAnalyser = ref<AnalyserNode>()
 const nowSpeaking = ref(false)

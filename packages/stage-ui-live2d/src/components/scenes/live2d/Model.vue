@@ -227,8 +227,10 @@ async function loadModel() {
 
   await modelLoadMutex.acquire()
 
+  const existingModel = model.value
   modelLoading.value = true
-  componentState.value = 'loading'
+  if (!existingModel)
+    componentState.value = 'loading'
 
   if (!pixiApp.value || !pixiApp.value.stage) {
     try {
@@ -243,21 +245,6 @@ async function loadModel() {
     }
   }
 
-  // REVIEW: here as await until(...) guarded the pixiApp and stage to be valid.
-  if (model.value && pixiApp.value?.stage) {
-    // Dispose expression controller before destroying the old model
-    expressionController.dispose()
-    internalModelRef.value = undefined
-
-    try {
-      pixiApp.value.stage.removeChild(model.value)
-      model.value.destroy()
-    }
-    catch (error) {
-      console.warn('Error removing old model:', error)
-    }
-    model.value = undefined
-  }
   if (!modelSrcRef.value) {
     console.warn('No Live2D model source provided.')
     modelLoading.value = false
@@ -285,9 +272,26 @@ async function loadModel() {
 
     // --- Scene
 
+    // Keep the previous model visible until the replacement is fully ready.
+    // This prevents settings-window navigation or model-setting updates from
+    // showing a blank stage while ZIP-backed Live2D assets reload.
+    expressionController.dispose()
+    internalModelRef.value = undefined
+
     model.value = live2DModel
     // REVIEW: pixiApp and stage are guaranteed to be valid here due to the until(...) above.
     pixiApp.value!.stage.addChild(model.value)
+
+    if (existingModel && existingModel !== model.value) {
+      try {
+        pixiApp.value!.stage.removeChild(existingModel)
+        existingModel.destroy()
+      }
+      catch (error) {
+        console.warn('Error removing old model:', error)
+      }
+    }
+
     initialModelWidth.value = model.value.width
     initialModelHeight.value = model.value.height
     model.value.anchor.set(0.5, 0.5)

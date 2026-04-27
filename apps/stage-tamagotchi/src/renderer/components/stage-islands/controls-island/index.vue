@@ -23,6 +23,7 @@ import {
   electronOpenSettings,
   electronStartDraggingWindow,
   electronWindowSetAlwaysOnTop,
+  projectManagementOpenBoardExternal,
 } from '../../../../shared/eventa'
 
 const { isDark, toggleDark } = useTheme()
@@ -35,6 +36,7 @@ const { enabled } = storeToRefs(settingsAudioDeviceStore)
 const { alwaysOnTop, controlsIslandIconSize } = storeToRefs(settingsStore)
 const openSettings = useElectronEventaInvoke(electronOpenSettings)
 const openChat = useElectronEventaInvoke(electronOpenChat)
+const openProjectBoardExternal = useElectronEventaInvoke(projectManagementOpenBoardExternal)
 const isLinux = useElectronEventaInvoke(electron.app.isLinux)
 const closeWindow = useElectronEventaInvoke(electronAppQuit)
 const setAlwaysOnTop = useElectronEventaInvoke(electronWindowSetAlwaysOnTop)
@@ -47,7 +49,12 @@ const blockingOverlays = reactive(new Set<string>())
 const isBlocked = computed(() => blockingOverlays.size > 0)
 
 function setOverlay(key: string, active: boolean) {
-  active ? blockingOverlays.add(key) : blockingOverlays.delete(key)
+  if (active) {
+    blockingOverlays.add(key)
+    return
+  }
+
+  blockingOverlays.delete(key)
 }
 
 // Expose for parent (e.g. to disable click-through when a dialog is open)
@@ -123,6 +130,10 @@ const startDraggingWindow = !isLinux() ? defineInvoke(context.value, electronSta
 function refreshWindow() {
   window.location.reload()
 }
+
+async function openProjectBoard() {
+  await openProjectBoardExternal()
+}
 </script>
 
 <template>
@@ -170,6 +181,15 @@ function refreshWindow() {
               </ControlButton>
               <template #tooltip>
                 {{ t('tamagotchi.stage.controls-island.open-chat') }}
+              </template>
+            </ControlButtonTooltip>
+
+            <ControlButtonTooltip disable-hoverable-content>
+              <ControlButton :button-style="adjustStyleClasses.button" @click="openProjectBoard">
+                <div i-solar:widget-5-outline :class="adjustStyleClasses.icon" text="neutral-800 dark:neutral-300" />
+              </ControlButton>
+              <template #tooltip>
+                {{ t('tamagotchi.stage.controls-island.open-project-board') }}
               </template>
             </ControlButtonTooltip>
 

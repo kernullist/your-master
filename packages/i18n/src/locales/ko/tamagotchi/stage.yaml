@@ -14,6 +14,7 @@ docs:
     disable: 항상 표시
   'open-settings': 설정 열기
   'open-chat': 채팅 열기
+  'open-project-board': 프로젝트 대시보드 열기
   'refresh': 새로고침
   'open-hearing-controls': 듣기 제어 열기
   'drag-to-move-window': 드레그하여 창 이동

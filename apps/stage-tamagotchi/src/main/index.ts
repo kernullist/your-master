@@ -29,8 +29,10 @@ import { createWindowAuthManagerService } from './services/airi/auth'
 import { setupServerChannel } from './services/airi/channel-server'
 import { setupGodotStageManager } from './services/airi/godot-stage'
 import { setupBuiltInServer } from './services/airi/http-server'
+import { createProjectBoardServer } from './services/airi/http-server/http/project-board'
 import { setupMcpStdioManager } from './services/airi/mcp-servers'
 import { setupPluginHost } from './services/airi/plugins'
+import { setupProjectManagementService } from './services/airi/project-management'
 import { setupArtistryBridge } from './services/airi/widgets/artistry-bridge'
 import { setupAutoUpdater } from './services/electron/auto-updater'
 import { setupTray } from './tray'
@@ -132,8 +134,17 @@ app.whenReady().then(async () => {
     build: async ({ dependsOn }) => setupServerChannel(dependsOn),
   })
 
+  const projectManagement = injeca.provide('modules:project-management', {
+    build: async () => setupProjectManagementService(),
+  })
+
   const airiHttpServer = injeca.provide('modules:airi-http-server', {
-    build: async () => setupBuiltInServer({ servers: [] }),
+    dependsOn: { projectManagement },
+    build: async ({ dependsOn }) => setupBuiltInServer({
+      servers: [
+        createProjectBoardServer({ store: dependsOn.projectManagement }),
+      ],
+    }),
   })
 
   const godotStageManager = injeca.provide('modules:godot-stage-manager', {
@@ -218,9 +229,10 @@ app.whenReady().then(async () => {
   }
 
   injeca.invoke({
-    dependsOn: { mainWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig },
+    dependsOn: { mainWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig, projectManagement },
     callback: async (deps) => {
       const { context } = createContext(ipcMain)
+      await deps.airiHttpServer.start()
       await setupArtistryBridge({
         widgetsManager: deps.widgetsWindow,
         context,

@@ -68,11 +68,16 @@ interface MockState {
   sessionMetas: Ref<Record<string, unknown>>
   applyRemoteSnapshot: ReturnType<typeof vi.fn>
   setSessionMessages: ReturnType<typeof vi.fn>
+  appendSessionMessage: ReturnType<typeof vi.fn>
   getSessionMessages: ReturnType<typeof vi.fn>
   ingest: ReturnType<typeof vi.fn>
 }
 
 let mockState: MockState
+const mockProjectManagement = vi.hoisted(() => ({
+  executeProjectManagementAction: vi.fn(async () => 'Opened project board in external browser.'),
+  projectManagementTools: vi.fn(async () => []),
+}))
 
 vi.mock('@proj-airi/stage-ui/stores/chat/session-store', () => ({
   useChatSessionStore: () => ({
@@ -87,6 +92,7 @@ vi.mock('@proj-airi/stage-ui/stores/chat/session-store', () => ({
     })),
     getSessionMessages: mockState.getSessionMessages,
     setSessionMessages: mockState.setSessionMessages,
+    appendSessionMessage: mockState.appendSessionMessage,
   }),
 }))
 
@@ -130,6 +136,11 @@ vi.mock('./tools/builtin/weather', () => ({
   weatherTools: vi.fn(async () => []),
 }))
 
+vi.mock('./tools/builtin/project-management', () => ({
+  executeProjectManagementAction: mockProjectManagement.executeProjectManagementAction,
+  projectManagementTools: mockProjectManagement.projectManagementTools,
+}))
+
 /**
  * @example
  * describe('useChatSyncStore authority ingest failures', () => {
@@ -137,7 +148,7 @@ vi.mock('./tools/builtin/weather', () => ({
  * })
  */
 describe('useChatSyncStore authority ingest failures', async () => {
-  const { useChatSyncStore } = await import('./chat-sync')
+  const { extractProjectWorkItemStartIdentifier, formatChatCommandFailureMessage, isTodoWorkItemListRequest, useChatSyncStore } = await import('./chat-sync')
 
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -161,6 +172,12 @@ describe('useChatSyncStore authority ingest failures', async () => {
     const setSessionMessages = vi.fn((sessionId: string, next: Array<{ role: string, content: string }>) => {
       sessionMessages.value[sessionId] = next
     })
+    const appendSessionMessage = vi.fn((sessionId: string, message: { role: string, content: string }) => {
+      sessionMessages.value[sessionId] = [
+        ...(sessionMessages.value[sessionId] ?? []),
+        message,
+      ]
+    })
 
     const getSessionMessages = vi.fn((sessionId: string) => sessionMessages.value[sessionId] ?? [])
 
@@ -174,10 +191,13 @@ describe('useChatSyncStore authority ingest failures', async () => {
       sessionMetas,
       applyRemoteSnapshot,
       setSessionMessages,
+      appendSessionMessage,
       getSessionMessages,
       ingest,
     }
 
+    mockProjectManagement.executeProjectManagementAction.mockReset()
+    mockProjectManagement.executeProjectManagementAction.mockResolvedValue('Opened project board in external browser.')
     vi.stubGlobal('BroadcastChannel', MockBroadcastChannel)
   })
 
@@ -217,9 +237,170 @@ describe('useChatSyncStore authority ingest failures', async () => {
     const persistedMessages = mockState.sessionMessages.value['session-1']
     expect(persistedMessages).toHaveLength(2)
     expect(persistedMessages[1]?.role).toBe('error')
+    expect(persistedMessages[1]?.content).toContain('요청을 처리하지 못했어')
     expect(persistedMessages[1]?.content).toContain('This model is not available in your region')
 
     peer.close()
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('formats tool and model failures for users', () => {
+   *   // raw tool/model errors should not appear as context-free failures
+   * })
+   */
+  it('formats command failures for user-visible chat errors', () => {
+    expect(formatChatCommandFailureMessage('Tool "stage_project_management" execution failed.')).toBe('요청을 처리하지 못했어.\n원인: Tool "stage_project_management" execution failed.')
+  })
+
+  /**
+   * @example
+   * it('opens the project board directly without asking the LLM to call tools', async () => {
+   *   // clear project-board requests append a user/assistant pair
+   *   // chat model ingest is skipped so weak tool-calling models cannot leak JSON
+   * })
+   */
+  it('opens project board requests through the local command shortcut', async () => {
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestIngest({
+      text: '프로젝트 보드 열어줘',
+      sessionId: 'session-1',
+    })
+
+    expect(mockState.ingest).not.toHaveBeenCalled()
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'user',
+      content: '프로젝트 보드 열어줘',
+    })
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: '프로젝트 보드를 별도 브라우저로 열었어.',
+      slices: [{ type: 'text', text: '프로젝트 보드를 별도 브라우저로 열었어.' }],
+      tool_results: [],
+    })
+
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('extracts direct work item start requests', () => {
+   *   // "AIRI-12 진행해줘" should bypass weak LLM tool calling
+   * })
+   */
+  it('extracts direct work item start requests', () => {
+    expect(extractProjectWorkItemStartIdentifier('AIRI-12 진행해줘')).toBe('AIRI-12')
+    expect(extractProjectWorkItemStartIdentifier('airi-12 start')).toBe('AIRI-12')
+    expect(extractProjectWorkItemStartIdentifier('AIRI-12 상태 알려줘')).toBeNull()
+  })
+
+  /**
+   * @example
+   * it('detects direct TODO work item list requests', () => {
+   *   // "현재 todo 일감들을 알려줘" should bypass weak LLM tool calling
+   * })
+   */
+  it('detects direct TODO work item list requests', () => {
+    expect(isTodoWorkItemListRequest('현재 todo 일감들을 알려줘')).toBe(true)
+    expect(isTodoWorkItemListRequest('TODO 작업 목록 보여줘')).toBe(true)
+    expect(isTodoWorkItemListRequest('AIRI-12 상태 알려줘')).toBe(false)
+  })
+
+  /**
+   * @example
+   * it('lists TODO work items through the local command shortcut', async () => {
+   *   // clear TODO-list requests append a user/assistant pair
+   *   // chat model ingest is skipped so AIRI can answer immediately
+   * })
+   */
+  it('lists TODO work items through the local command shortcut', async () => {
+    mockProjectManagement.executeProjectManagementAction.mockResolvedValueOnce('- BC-1: Change theme (todo)')
+
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestIngest({
+      text: '현재 todo 일감들을 알려줘',
+      sessionId: 'session-1',
+    })
+
+    expect(mockState.ingest).not.toHaveBeenCalled()
+    expect(mockProjectManagement.executeProjectManagementAction).toHaveBeenCalledWith({
+      action: 'list_work_items',
+      status: 'todo',
+    })
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: '현재 TODO 일감은:\n- BC-1: Change theme (todo)',
+      slices: [{ type: 'text', text: '현재 TODO 일감은:\n- BC-1: Change theme (todo)' }],
+      tool_results: [],
+    })
+
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('starts TODO work items through the local command shortcut', async () => {
+   *   // clear project work requests append a user/assistant pair
+   *   // chat model ingest is skipped so AIRI can start work immediately
+   * })
+   */
+  it('starts TODO work items through the local command shortcut', async () => {
+    mockProjectManagement.executeProjectManagementAction.mockResolvedValueOnce('AIRI-12 작업을 시작했어. 상태를 in_progress로 바꿨어.')
+
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestIngest({
+      text: 'AIRI-12 진행해줘',
+      sessionId: 'session-1',
+    })
+
+    expect(mockState.ingest).not.toHaveBeenCalled()
+    expect(mockProjectManagement.executeProjectManagementAction).toHaveBeenCalledWith({
+      action: 'start_work_item',
+      identifier: 'AIRI-12',
+    })
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: 'AIRI-12 작업을 시작했어. 상태를 in_progress로 바꿨어.',
+      slices: [{ type: 'text', text: 'AIRI-12 작업을 시작했어. 상태를 in_progress로 바꿨어.' }],
+      tool_results: [],
+    })
+
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('asks for missing work item details before starting', async () => {
+   *   // main process can reject start with a clarification message
+   *   // chat shortcut surfaces that question directly to the user
+   * })
+   */
+  it('asks for missing work item details before starting through the local command shortcut', async () => {
+    mockProjectManagement.executeProjectManagementAction.mockResolvedValueOnce('AIRI-12를 시작하기 전에 목표와 완료 조건이 필요해. 목표와 완료 조건을 알려줘.')
+
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestIngest({
+      text: 'AIRI-12 작업 시작해줘',
+      sessionId: 'session-1',
+    })
+
+    expect(mockState.ingest).not.toHaveBeenCalled()
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: 'AIRI-12를 시작하기 전에 목표와 완료 조건이 필요해. 목표와 완료 조건을 알려줘.',
+      slices: [{ type: 'text', text: 'AIRI-12를 시작하기 전에 목표와 완료 조건이 필요해. 목표와 완료 조건을 알려줘.' }],
+      tool_results: [],
+    })
+
     store.dispose()
   })
 

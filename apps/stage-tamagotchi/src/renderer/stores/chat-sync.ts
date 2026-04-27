@@ -14,11 +14,12 @@ import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
 import { imageJournalTools } from './tools/builtin/image-journal'
+import { executeProjectManagementAction, projectManagementTools } from './tools/builtin/project-management'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
 
 type ChatSyncMode = 'inactive' | 'authority' | 'follower'
-type ToolsetId = 'widgets' | 'artistry'
+type ToolsetId = 'widgets' | 'artistry' | 'project-management'
 
 interface AttachmentPayload {
   type: 'image'
@@ -71,6 +72,13 @@ const CHAT_SYNC_CHANNEL_NAME = 'airi:stage-tamagotchi:chat-sync'
 const AUTHORITY_HEARTBEAT_INTERVAL_MS = 1000
 const REQUEST_TIMEOUT_MS = 30000
 
+export function formatChatCommandFailureMessage(message: string): string {
+  const trimmed = message.trim()
+  return trimmed
+    ? `요청을 처리하지 못했어.\n원인: ${trimmed}`
+    : '요청을 처리하지 못했어.'
+}
+
 function createRequestId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
@@ -117,6 +125,95 @@ function resolveRetrySourceIndex(messages: ChatHistoryItem[], index: number): nu
   }
 
   return -1
+}
+
+export function isProjectBoardOpenRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized)
+    return false
+
+  const includesBoardKeyword = [
+    '프로젝트 보드',
+    '칸반 보드',
+    'project board',
+    'kanban board',
+  ].some(keyword => normalized.includes(keyword))
+  const includesOpenKeyword = [
+    '열',
+    '띄',
+    '보여',
+    'open',
+    'show',
+  ].some(keyword => normalized.includes(keyword))
+
+  return includesBoardKeyword && includesOpenKeyword
+}
+
+export function isTodoWorkItemListRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized)
+    return false
+
+  const includesTodoKeyword = [
+    'todo',
+    'to-do',
+    '할 일',
+    '해야 할',
+  ].some(keyword => normalized.includes(keyword))
+  const includesWorkItemKeyword = [
+    '일감',
+    '작업',
+    'work item',
+    'issue',
+    'task',
+  ].some(keyword => normalized.includes(keyword))
+  const includesListKeyword = [
+    '알려',
+    '보여',
+    '목록',
+    '리스트',
+    '뭐',
+    'list',
+    'show',
+    'current',
+  ].some(keyword => normalized.includes(keyword))
+
+  return includesTodoKeyword && includesWorkItemKeyword && includesListKeyword
+}
+
+/**
+ * Extracts a work item identifier from a direct start request.
+ *
+ * Before:
+ * - "AIRI-12 진행해줘"
+ *
+ * After:
+ * - "AIRI-12"
+ */
+export function extractProjectWorkItemStartIdentifier(text: string): string | null {
+  const normalized = text.trim()
+  if (!normalized)
+    return null
+
+  const identifier = /(?:^|[^A-Z0-9])([A-Z][A-Z0-9]*-\d+)(?=$|[^A-Z0-9])/i.exec(normalized)?.[1]?.toUpperCase()
+  if (!identifier)
+    return null
+
+  const lower = normalized.toLowerCase()
+  const includesStartKeyword = [
+    '진행',
+    '시작',
+    '처리',
+    '작업',
+    '구현',
+    '해줘',
+    'start',
+    'work on',
+    'proceed',
+    'run',
+  ].some(keyword => lower.includes(keyword))
+
+  return includesStartKeyword ? identifier : null
 }
 
 export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => {
@@ -240,17 +337,21 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
-      widgets: async () => {
-        const [w, we] = await Promise.all([widgetsTools(), weatherTools()])
-        return [...w, ...we]
+      'widgets': async () => {
+        const [w, we, pm] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools()])
+        return [...w, ...we, ...pm]
       },
-      artistry: async () => {
-        const [ai, wi, we] = await Promise.all([
+      'artistry': async () => {
+        const [ai, wi, we, pm] = await Promise.all([
           imageJournalTools(),
           widgetsTools(),
           weatherTools(),
+          projectManagementTools(),
         ])
-        return [...ai, ...wi, ...we]
+        return [...ai, ...wi, ...we, ...pm]
+      },
+      'project-management': async () => {
+        return projectManagementTools()
       },
     }
 
@@ -258,7 +359,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       return toolsetRegistry[toolset]
     }
 
-    return undefined
+    return projectManagementTools
   }
 
   async function executeIngest(payload: IngestCommandPayload) {
@@ -322,10 +423,86 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       ...chatSession.getSessionMessages(sessionId),
       {
         role: 'error',
-        content: message,
+        content: formatChatCommandFailureMessage(message),
       } satisfies ChatHistoryItem,
     ]
     chatSession.setSessionMessages(sessionId, nextMessages)
+  }
+
+  async function executeLocalProjectBoardRequest(payload: IngestCommandPayload): Promise<boolean> {
+    if (!isProjectBoardOpenRequest(payload.text))
+      return false
+
+    const sessionId = payload.sessionId || chatSession.activeSessionId
+    const result = await executeProjectManagementAction({ action: 'open_board' })
+    const content = result.startsWith('Opened project board')
+      ? '프로젝트 보드를 별도 브라우저로 열었어.'
+      : result
+
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'user',
+      content: payload.text,
+    })
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'assistant',
+      content,
+      slices: [{ type: 'text', text: content }],
+      tool_results: [],
+    })
+
+    return true
+  }
+
+  async function executeLocalTodoWorkItemListRequest(payload: IngestCommandPayload): Promise<boolean> {
+    if (!isTodoWorkItemListRequest(payload.text))
+      return false
+
+    const sessionId = payload.sessionId || chatSession.activeSessionId
+    const result = await executeProjectManagementAction({
+      action: 'list_work_items',
+      status: 'todo',
+    })
+    const content = result.trim()
+      ? `현재 TODO 일감은:\n${result}`
+      : '현재 TODO 일감이 없어.'
+
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'user',
+      content: payload.text,
+    })
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'assistant',
+      content,
+      slices: [{ type: 'text', text: content }],
+      tool_results: [],
+    })
+
+    return true
+  }
+
+  async function executeLocalProjectWorkItemStartRequest(payload: IngestCommandPayload): Promise<boolean> {
+    const identifier = extractProjectWorkItemStartIdentifier(payload.text)
+    if (!identifier)
+      return false
+
+    const sessionId = payload.sessionId || chatSession.activeSessionId
+    const content = await executeProjectManagementAction({
+      action: 'start_work_item',
+      identifier,
+    })
+
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'user',
+      content: payload.text,
+    })
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'assistant',
+      content,
+      slices: [{ type: 'text', text: content }],
+      tool_results: [],
+    })
+
+    return true
   }
 
   async function handleCommand(message: Extract<ChatSyncMessage, { type: 'command' }>) {
@@ -345,7 +522,13 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     try {
       switch (message.command) {
         case 'ingest':
-          await executeIngest(message.payload)
+          if (
+            !await executeLocalTodoWorkItemListRequest(message.payload)
+            && !await executeLocalProjectWorkItemStartRequest(message.payload)
+            && !await executeLocalProjectBoardRequest(message.payload)
+          ) {
+            await executeIngest(message.payload)
+          }
           break
         case 'retry':
           await executeRetry(message.payload)
@@ -479,6 +662,15 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   async function requestIngest(payload: IngestCommandPayload) {
     if (mode.value === 'authority') {
+      if (await executeLocalTodoWorkItemListRequest(payload))
+        return
+
+      if (await executeLocalProjectWorkItemStartRequest(payload))
+        return
+
+      if (await executeLocalProjectBoardRequest(payload))
+        return
+
       await executeIngest(payload)
       return
     }

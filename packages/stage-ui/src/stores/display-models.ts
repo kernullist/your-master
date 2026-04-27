@@ -18,6 +18,8 @@ export type DisplayModel
   = | DisplayModelFile
     | DisplayModelURL
 
+const presetLive2dMaoUrl = new URL('../assets/live2d/models/mao/mao.zip', import.meta.url).href
+const presetLive2dMaoPreview = new URL('../assets/live2d/models/mao/preview.jpg', import.meta.url).href
 const presetLive2dProUrl = new URL('../assets/live2d/models/hiyori_pro_zh.zip', import.meta.url).href
 const presetLive2dFreeUrl = new URL('../assets/live2d/models/hiyori_free_zh.zip', import.meta.url).href
 const presetLive2dPreview = new URL('../assets/live2d/models/hiyori/preview.png', import.meta.url).href
@@ -47,6 +49,7 @@ export interface DisplayModelURL {
 }
 
 const displayModelsPresets: DisplayModel[] = [
+  { id: 'preset-live2d-mao', format: DisplayModelFormat.Live2dZip, type: 'url', url: presetLive2dMaoUrl, name: 'Niziiro Mao', previewImage: presetLive2dMaoPreview, importedAt: 1733113886841 },
   { id: 'preset-live2d-1', format: DisplayModelFormat.Live2dZip, type: 'url', url: presetLive2dProUrl, name: 'Hiyori (Pro)', previewImage: presetLive2dPreview, importedAt: 1733113886840 },
   { id: 'preset-live2d-2', format: DisplayModelFormat.Live2dZip, type: 'url', url: presetLive2dFreeUrl, name: 'Hiyori (Free)', previewImage: presetLive2dPreview, importedAt: 1733113886840 },
   { id: 'preset-vrm-1', format: DisplayModelFormat.VRM, type: 'url', url: presetVrmAvatarAUrl, name: 'AvatarSample_A', previewImage: presetVrmAvatarAPreview, importedAt: 1733113886840 },

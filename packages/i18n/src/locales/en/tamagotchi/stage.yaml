@@ -14,6 +14,7 @@ docs:
     disable: Always show
   'open-settings': Open settings
   'open-chat': Open Chat
+  'open-project-board': Open project dashboard
   'refresh': Refresh
   'open-hearing-controls': Open hearing Controls
   'drag-to-move-window': Drag to move window

@@ -14,6 +14,7 @@ docs:
     disable: Mostrar siempre
   'open-settings': Abrir configuración
   'open-chat': Abrir Chat
+  'open-project-board': Abrir panel del proyecto
   'refresh': Actualizar
   'open-hearing-controls': Abrir controles de audición
   'drag-to-move-window': Arrastra para mover la ventana

@@ -14,6 +14,7 @@ docs:
     disable: Всегда показывать
   'open-settings': Открыть настройки
   'open-chat': Открыть чат
+  'open-project-board': Открыть панель проекта
   'refresh': Обновить результаты
   'open-hearing-controls': Управление слухом
   'drag-to-move-window': Перетащите окно

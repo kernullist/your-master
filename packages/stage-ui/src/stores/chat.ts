@@ -5,6 +5,7 @@ import type { CommonContentPart, Message, ToolMessage } from '@xsai/shared-chat'
 import type { ChatAssistantMessage, ChatSlices, ChatStreamEventContext, StreamingAssistantMessage } from '../types/chat'
 import type { StreamEvent, StreamOptions } from './llm'
 
+import { errorMessageFrom } from '@moeru/std'
 import { IOAttributes, IOEvents, IOSpanNames, IOSubsystems } from '@proj-airi/stage-shared'
 import { createQueue } from '@proj-airi/stream-kit'
 import { nanoid } from 'nanoid'
@@ -61,6 +62,13 @@ function cloneStreamingMessage(message: StreamingAssistantMessage): StreamingAss
   catch {
     return JSON.parse(JSON.stringify(message)) as StreamingAssistantMessage
   }
+}
+
+function formatToolFailureNotice(error: unknown): string {
+  const message = errorMessageFrom(error) ?? (typeof error === 'string' ? error : JSON.stringify(error))
+  return message
+    ? `도구 실행에 실패했어. 요청을 처리하지 못했어.\n원인: ${message}`
+    : '도구 실행에 실패했어. 요청을 처리하지 못했어.'
 }
 
 interface SendOptions {
@@ -462,6 +470,16 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
                   isError: true,
                   result: event.result,
                 })
+                {
+                  const notice = formatToolFailureNotice(event.result)
+                  fullText += notice
+                  buildingMessage.content += notice
+                  buildingMessage.slices.push({
+                    type: 'text',
+                    text: notice,
+                  })
+                  updateUI()
+                }
 
                 break
               case 'text-delta':
