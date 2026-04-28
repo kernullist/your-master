@@ -23,7 +23,6 @@ const workItem: WorkItem = {
   goal: 'Show a board',
   acceptanceCriteria: ['Board is visible'],
   status: 'todo',
-  priority: 'none',
   position: 0,
   createdAt: 1,
   updatedAt: 1,

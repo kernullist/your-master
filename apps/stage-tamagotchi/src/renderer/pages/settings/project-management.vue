@@ -10,11 +10,12 @@ import { computed, onMounted, ref, watch } from 'vue'
 import {
   projectManagementDeleteProject,
   projectManagementGetSnapshot,
+  projectManagementListCodexCliModels,
   projectManagementRegisterProject,
   projectManagementUpdateSettings,
 } from '../../../shared/eventa'
 
-type AgentConfigKey = 'airi' | 'worker' | 'reviewer'
+type AgentConfigKey = 'projectManager' | 'worker' | 'reviewer'
 
 interface OpenRouterModel {
   id: string
@@ -26,12 +27,20 @@ interface OpenRouterModelsResponse {
   data?: OpenRouterModel[]
 }
 
+interface CodexCliModel {
+  id: string
+  name?: string
+  defaultReasoningEffort?: string
+  supportedReasoningEfforts: string[]
+}
+
 const openRouterBaseUrl = 'https://openrouter.ai/api/v1'
 
 const getSnapshot = useElectronEventaInvoke(projectManagementGetSnapshot)
 const registerProject = useElectronEventaInvoke(projectManagementRegisterProject)
 const deleteProject = useElectronEventaInvoke(projectManagementDeleteProject)
 const updateSettings = useElectronEventaInvoke(projectManagementUpdateSettings)
+const listCodexCliModels = useElectronEventaInvoke(projectManagementListCodexCliModels)
 
 const isBusy = ref(false)
 const statusMessage = ref('')
@@ -40,22 +49,29 @@ const rootPath = ref('')
 const issuePrefix = ref('')
 const snapshot = ref<Awaited<ReturnType<typeof getSnapshot>>>()
 const settingsDraft = ref<ProjectAgentSettings>(createSerializableSettings(defaultProjectAgentSettings))
+const shellDenylistText = ref(defaultProjectAgentSettings.shellDenylist.join('\n'))
+const shellAllowlistText = ref(defaultProjectAgentSettings.shellAllowlist.join('\n'))
+const forbiddenPathPatternsText = ref(defaultProjectAgentSettings.forbiddenPathPatterns.join('\n'))
 const openRouterModels = ref<OpenRouterModel[]>([])
 const openRouterModelsLoading = ref(false)
 const openRouterModelsError = ref('')
+const codexCliModels = ref<CodexCliModel[]>([])
+const codexCliModelsLoading = ref(false)
+const codexCliModelsError = ref('')
 let openRouterModelsAbortController: AbortController | undefined
 
 const providerOptions: Array<{ label: string, value: AgentModelProvider }> = [
   { label: 'LM Studio', value: 'lm-studio' },
   { label: 'Ollama', value: 'ollama' },
   { label: 'OpenRouter', value: 'openrouter' },
+  { label: 'Codex CLI', value: 'codex-cli' },
 ]
 
 const agentSections: Array<{ key: AgentConfigKey, title: string, description: string }> = [
   {
-    key: 'airi',
-    title: 'AIRI',
-    description: '사용자와 대화하고 워커와 리뷰어를 관리하는 메인 모델',
+    key: 'projectManager',
+    title: 'Project Manager',
+    description: '일감을 분석하고 워커와 리뷰어에게 전달할 실행 브리프를 만드는 에이전트',
   },
   {
     key: 'worker',
@@ -75,6 +91,15 @@ const openRouterModelOptions = computed(() => openRouterModels.value.map(model =
   description: model.context_length ? `${model.context_length.toLocaleString()} context` : undefined,
 })))
 
+const codexCliModelOptions = computed(() => codexCliModels.value.map(model => ({
+  label: model.name ? `${model.name} (${model.id})` : model.id,
+  value: model.id,
+  description: [
+    model.defaultReasoningEffort ? `default ${model.defaultReasoningEffort}` : '',
+    model.supportedReasoningEfforts.length ? model.supportedReasoningEfforts.join(', ') : '',
+  ].filter(Boolean).join(' · ') || undefined,
+})))
+
 const activeOpenRouterApiKey = computed(() => {
   for (const agent of agentSections) {
     const config = settingsDraft.value[agent.key]
@@ -86,20 +111,7 @@ const activeOpenRouterApiKey = computed(() => {
   return ''
 })
 
-const shellDenylistText = computed({
-  get: () => settingsDraft.value.shellDenylist.join('\n'),
-  set: value => settingsDraft.value.shellDenylist = value.split('\n').map(item => item.trim()).filter(Boolean),
-})
-
-const shellAllowlistText = computed({
-  get: () => settingsDraft.value.shellAllowlist.join('\n'),
-  set: value => settingsDraft.value.shellAllowlist = value.split('\n').map(item => item.trim()).filter(Boolean),
-})
-
-const forbiddenPathPatternsText = computed({
-  get: () => settingsDraft.value.forbiddenPathPatterns.join('\n'),
-  set: value => settingsDraft.value.forbiddenPathPatterns = value.split('\n').map(item => item.trim()).filter(Boolean),
-})
+const hasCodexCliAgent = computed(() => agentSections.some(agent => settingsDraft.value[agent.key].provider === 'codex-cli'))
 
 function applyProviderDefaults() {
   for (const agent of agentSections) {
@@ -108,15 +120,32 @@ function applyProviderDefaults() {
     if (config.provider === 'openrouter') {
       config.baseUrl = openRouterBaseUrl
     }
+
+    if (config.provider === 'codex-cli') {
+      config.baseUrl = undefined
+      config.apiKey = undefined
+    }
   }
+}
+
+function parseSettingsListText(value: string): string[] {
+  return value.split('\n').map(item => item.trim()).filter(Boolean)
 }
 
 function isOpenRouterAgent(agentKey: AgentConfigKey) {
   return settingsDraft.value[agentKey].provider === 'openrouter'
 }
 
+function isCodexCliAgent(agentKey: AgentConfigKey) {
+  return settingsDraft.value[agentKey].provider === 'codex-cli'
+}
+
 function shouldUseOpenRouterModelDropdown(agentKey: AgentConfigKey) {
   return isOpenRouterAgent(agentKey) && !!settingsDraft.value[agentKey].apiKey?.trim()
+}
+
+function shouldUseCodexCliModelDropdown(agentKey: AgentConfigKey) {
+  return isCodexCliAgent(agentKey)
 }
 
 function createSerializableAgentConfig(config: AgentModelConfig): AgentModelConfig {
@@ -131,7 +160,7 @@ function createSerializableAgentConfig(config: AgentModelConfig): AgentModelConf
 
 function createSerializableSettings(settings: ProjectAgentSettings): ProjectAgentSettings {
   return {
-    airi: createSerializableAgentConfig(settings.airi),
+    projectManager: createSerializableAgentConfig(settings.projectManager),
     worker: createSerializableAgentConfig(settings.worker),
     reviewer: createSerializableAgentConfig(settings.reviewer),
     maxReviewRetries: Number(settings.maxReviewRetries),
@@ -146,7 +175,13 @@ function createSerializableSettings(settings: ProjectAgentSettings): ProjectAgen
 
 function createSerializableSettingsDraft(): ProjectAgentSettings {
   applyProviderDefaults()
-  return createSerializableSettings(settingsDraft.value)
+  const settings = createSerializableSettings(settingsDraft.value)
+  return {
+    ...settings,
+    shellDenylist: parseSettingsListText(shellDenylistText.value),
+    shellAllowlist: parseSettingsListText(shellAllowlistText.value),
+    forbiddenPathPatterns: parseSettingsListText(forbiddenPathPatternsText.value),
+  }
 }
 
 async function loadOpenRouterModels(apiKey: string) {
@@ -187,9 +222,29 @@ async function loadOpenRouterModels(apiKey: string) {
   }
 }
 
+async function loadCodexCliModels() {
+  codexCliModelsLoading.value = true
+  codexCliModelsError.value = ''
+
+  try {
+    const result = await listCodexCliModels()
+    codexCliModels.value = result.models
+  }
+  catch (error) {
+    codexCliModels.value = []
+    codexCliModelsError.value = errorMessageFrom(error) ?? 'Codex CLI 모델 목록을 불러오지 못했어.'
+  }
+  finally {
+    codexCliModelsLoading.value = false
+  }
+}
+
 async function refreshSnapshot() {
   snapshot.value = await getSnapshot()
   settingsDraft.value = createSerializableSettings(snapshot.value.settings)
+  shellDenylistText.value = settingsDraft.value.shellDenylist.join('\n')
+  shellAllowlistText.value = settingsDraft.value.shellAllowlist.join('\n')
+  forbiddenPathPatternsText.value = settingsDraft.value.forbiddenPathPatterns.join('\n')
   applyProviderDefaults()
 }
 
@@ -272,6 +327,13 @@ watch(activeOpenRouterApiKey, async (apiKey) => {
   }
 
   await loadOpenRouterModels(apiKey)
+}, { immediate: true })
+
+watch(hasCodexCliAgent, async (enabled) => {
+  if (!enabled)
+    return
+
+  await loadCodexCliModels()
 }, { immediate: true })
 </script>
 
@@ -374,7 +436,7 @@ watch(activeOpenRouterApiKey, async (apiKey) => {
           에이전트 모델
         </h2>
         <p :class="['text-sm text-neutral-500 dark:text-neutral-400']">
-          AIRI, 워커, 리뷰어가 사용할 provider와 모델을 설정해.
+          Project Manager, 워커, 리뷰어가 사용할 provider와 모델을 설정해.
         </p>
       </div>
 
@@ -403,7 +465,22 @@ watch(activeOpenRouterApiKey, async (apiKey) => {
             :options="providerOptions"
           />
           <FieldCombobox
-            v-if="shouldUseOpenRouterModelDropdown(agent.key)"
+            v-if="shouldUseCodexCliModelDropdown(agent.key)"
+            v-model="settingsDraft[agent.key].model"
+            layout="vertical"
+            label="모델"
+            :options="codexCliModelOptions"
+            :disabled="!!codexCliModelsError || codexCliModelsLoading"
+            :placeholder="settingsDraft[agent.key].model || (codexCliModelsLoading ? 'Codex CLI 모델 확인 중...' : 'Codex CLI 모델 선택')"
+          >
+            <template #empty>
+              <div :class="['px-3 py-2 text-sm text-neutral-500 dark:text-neutral-400']">
+                {{ codexCliModelsError || (codexCliModelsLoading ? 'Codex CLI 모델 확인 중...' : '표시할 모델이 없어.') }}
+              </div>
+            </template>
+          </FieldCombobox>
+          <FieldCombobox
+            v-else-if="shouldUseOpenRouterModelDropdown(agent.key)"
             v-model="settingsDraft[agent.key].model"
             layout="vertical"
             label="모델"
@@ -428,11 +505,12 @@ watch(activeOpenRouterApiKey, async (apiKey) => {
             v-model="settingsDraft[agent.key].baseUrl"
             layout="vertical"
             label="Base URL"
-            :disabled="isOpenRouterAgent(agent.key)"
+            :disabled="isOpenRouterAgent(agent.key) || isCodexCliAgent(agent.key)"
             placeholder="http://localhost:1234/v1"
           />
         </div>
         <FieldInput
+          v-if="!isCodexCliAgent(agent.key)"
           v-model="settingsDraft[agent.key].apiKey"
           layout="vertical"
           type="password"

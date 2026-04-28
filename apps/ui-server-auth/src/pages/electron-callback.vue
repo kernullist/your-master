@@ -153,7 +153,7 @@ onMounted(() => {
 
     <div v-else :class="['sm:max-w-md md:max-w-md', 'flex w-full flex-col items-center']">
       <div :class="['mb-8 text-3xl font-bold']">
-        Project AIRI
+        Your Master
       </div>
 
       <div

@@ -7,10 +7,13 @@ import { errorMessageFrom } from '@moeru/std'
 
 import { callAgentText } from './agent-runtime'
 import {
+  buildAgentRunWorktreeBranchName,
+  buildAgentRunWorktreePath,
   commitAgentChangedFiles,
   createAgentWorktree,
   getAgentDiffSummary,
   getGitChangedFiles,
+  integrateAgentBranchIntoProject,
   removeAgentWorktree,
   revertAgentChangedFiles,
 } from './git'
@@ -35,6 +38,14 @@ type WorkerAction
 interface ReviewerDecision {
   passed: boolean
   comment: string
+}
+
+interface ProjectManagerBrief {
+  summary: string
+  implementationPlan: string[]
+  riskNotes: string[]
+  reviewFocus: string[]
+  suggestedTests: string[]
 }
 
 interface ProjectRunnerStore {
@@ -111,11 +122,58 @@ function parseReviewerDecision(text: string): ReviewerDecision {
   }
 }
 
+/**
+ * Normalizes optional model JSON list fields.
+ *
+ * Before:
+ * - `[" Read file ", "", 42]`
+ *
+ * After:
+ * - `["Read file"]`
+ */
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value))
+    return []
+
+  return value
+    .filter(item => typeof item === 'string')
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function parseProjectManagerBrief(text: string): ProjectManagerBrief {
+  const parsed = parseAgentJsonObject(text)
+  return {
+    summary: asString(parsed.summary, 'summary'),
+    implementationPlan: asStringArray(parsed.implementationPlan),
+    riskNotes: asStringArray(parsed.riskNotes),
+    reviewFocus: asStringArray(parsed.reviewFocus),
+    suggestedTests: asStringArray(parsed.suggestedTests),
+  }
+}
+
 function truncateToolResult(value: unknown): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value)
   if (text.length <= 12000)
     return text
   return `${text.slice(0, 12000)}\n[truncated ${text.length - 12000} chars]`
+}
+
+function formatBriefList(title: string, items: string[]): string {
+  if (items.length === 0)
+    return ''
+
+  return `${title}:\n${items.map(item => `- ${item}`).join('\n')}`
+}
+
+function formatProjectManagerBrief(brief: ProjectManagerBrief): string {
+  return [
+    `Summary: ${brief.summary}`,
+    formatBriefList('Implementation plan', brief.implementationPlan),
+    formatBriefList('Risk notes', brief.riskNotes),
+    formatBriefList('Review focus', brief.reviewFocus),
+    formatBriefList('Suggested tests', brief.suggestedTests),
+  ].filter(Boolean).join('\n\n')
 }
 
 function createWorkerSystemPrompt(): string {
@@ -137,6 +195,7 @@ function createWorkerTaskMessage(params: {
   attempt: number
   project: Project
   workItem: WorkItem
+  managerBrief?: ProjectManagerBrief
   previousDiffSummary?: string
   previousReviewerComment?: string
 }): AgentChatMessage {
@@ -147,6 +206,7 @@ function createWorkerTaskMessage(params: {
       `Work item: ${params.workItem.identifier} ${params.workItem.title}`,
       `Goal: ${params.workItem.goal}`,
       `Acceptance criteria:\n${params.workItem.acceptanceCriteria.map(item => `- ${item}`).join('\n')}`,
+      params.managerBrief ? `Project manager brief:\n${formatProjectManagerBrief(params.managerBrief)}` : '',
       `Attempt: ${params.attempt + 1}`,
       params.previousReviewerComment ? `Previous reviewer feedback:\n${params.previousReviewerComment}` : '',
       params.previousDiffSummary ? `Previous diff summary:\n${params.previousDiffSummary}` : '',
@@ -160,6 +220,7 @@ async function runWorkerWithTools(params: {
   projectRoot: string
   settings: ProjectAgentSettings
   workItem: WorkItem
+  managerBrief?: ProjectManagerBrief
   attempt: number
   previousDiffSummary?: string
   previousReviewerComment?: string
@@ -167,7 +228,10 @@ async function runWorkerWithTools(params: {
   const changedFiles = new Set<string>()
   const messages: AgentChatMessage[] = [
     { role: 'system', content: createWorkerSystemPrompt() },
-    createWorkerTaskMessage(params),
+    createWorkerTaskMessage({
+      ...params,
+      managerBrief: params.managerBrief,
+    }),
   ]
 
   for (let step = 0; step < 30; step += 1) {
@@ -175,6 +239,7 @@ async function runWorkerWithTools(params: {
       config: params.settings.worker,
       messages,
       fetcher: params.fetcher,
+      projectRoot: params.projectRoot,
     })
     const action = parseWorkerAction(response)
     messages.push({ role: 'assistant', content: response })
@@ -265,7 +330,9 @@ async function executeWorkerAction(params: {
 
 async function runReviewerAgent(params: {
   fetcher?: AgentRuntimeFetch
+  managerBrief?: ProjectManagerBrief
   project: Project
+  projectRoot: string
   settings: ProjectAgentSettings
   workItem: WorkItem
   workerResult: WorkerAgentResult
@@ -280,14 +347,68 @@ async function runReviewerAgent(params: {
         `Work item: ${params.workItem.identifier} ${params.workItem.title}`,
         `Goal: ${params.workItem.goal}`,
         `Acceptance criteria:\n${params.workItem.acceptanceCriteria.map(item => `- ${item}`).join('\n')}`,
+        params.managerBrief ? `Project manager brief:\n${formatProjectManagerBrief(params.managerBrief)}` : '',
         `Worker comment:\n${params.workerResult.comment}`,
         `Diff summary:\n${params.workerResult.diffSummary}`,
         params.workerResult.testSummary ? `Test summary:\n${params.workerResult.testSummary}` : '',
       ].filter(Boolean).join('\n\n'),
     }],
     fetcher: params.fetcher,
+    projectRoot: params.projectRoot,
   })
   return parseReviewerDecision(response)
+}
+
+/**
+ * Asks the project manager model for a worker/reviewer execution brief.
+ *
+ * Use when:
+ * - A configured project manager should shape the run before Worker edits start
+ * - Worker and Reviewer should share the same plan, risks, and review focus
+ *
+ * Expects:
+ * - The model returns the requested JSON object
+ * - Empty manager model ids mean project-manager planning is disabled
+ *
+ * Returns:
+ * - A normalized brief, or undefined when the role is not configured
+ *
+ * Call stack:
+ *
+ * runProjectWorkItem
+ *   -> {@link runProjectManagerAgent}
+ *     -> {@link callAgentText}
+ *       -> project manager provider chat completions
+ */
+async function runProjectManagerAgent(params: {
+  fetcher?: AgentRuntimeFetch
+  project: Project
+  projectRoot: string
+  settings: ProjectAgentSettings
+  workItem: WorkItem
+}): Promise<ProjectManagerBrief | undefined> {
+  if (!params.settings.projectManager.model.trim())
+    return undefined
+
+  const response = await callAgentText({
+    config: params.settings.projectManager,
+    messages: [{
+      role: 'user',
+      content: [
+        'Return exactly JSON with this shape:',
+        '{"summary":"short execution summary","implementationPlan":["step"],"riskNotes":["risk"],"reviewFocus":["focus"],"suggestedTests":["test command or check"]}',
+        `Project: ${params.project.name}`,
+        `Work item: ${params.workItem.identifier} ${params.workItem.title}`,
+        `Goal: ${params.workItem.goal}`,
+        `Acceptance criteria:\n${params.workItem.acceptanceCriteria.map(item => `- ${item}`).join('\n')}`,
+        'Do not edit files. Prepare the brief for a coding worker and strict reviewer.',
+      ].join('\n\n'),
+    }],
+    fetcher: params.fetcher,
+    projectRoot: params.projectRoot,
+  })
+
+  return parseProjectManagerBrief(response)
 }
 
 /**
@@ -324,7 +445,9 @@ export async function runProjectWorkItem(params: {
 }): Promise<void> {
   const runId = params.generateId()
   let activeProjectRoot = params.project.rootPath
+  let managerBrief: ProjectManagerBrief | undefined
   let worktree: { branchName: string, path: string } | undefined
+  let shouldRemoveWorktree = true
   const startedAt = params.now()
 
   const upsertRun = (patch: Partial<WorkItemRunRecord>) => {
@@ -354,6 +477,8 @@ export async function runProjectWorkItem(params: {
       worktree = await createAgentWorktree({
         projectRoot: params.project.rootPath,
         workItem: params.workItem,
+        branchName: buildAgentRunWorktreeBranchName(params.workItem, runId),
+        worktreePath: buildAgentRunWorktreePath(params.project.rootPath, params.workItem, runId),
       })
       activeProjectRoot = worktree.path
       params.store.addComment({
@@ -370,6 +495,32 @@ export async function runProjectWorkItem(params: {
       branchName: worktree?.branchName,
     })
 
+    try {
+      managerBrief = await runProjectManagerAgent({
+        fetcher: params.fetcher,
+        project: params.project,
+        projectRoot: activeProjectRoot,
+        settings: params.settings,
+        workItem: params.workItem,
+      })
+      if (managerBrief) {
+        params.store.addComment({
+          workItemId: params.workItem.id,
+          actorType: 'system',
+          kind: 'status',
+          content: `Project Manager brief:\n${formatProjectManagerBrief(managerBrief)}`,
+        })
+      }
+    }
+    catch (error) {
+      params.store.addComment({
+        workItemId: params.workItem.id,
+        actorType: 'system',
+        kind: 'status',
+        content: `Project Manager 브리프 생성에 실패했지만 워커 실행은 계속할게: ${errorMessageFrom(error) ?? 'unknown error'}`,
+      })
+    }
+
     const reviewResult = await runProjectReviewLoop({
       project: params.project,
       workItem: params.workItem,
@@ -380,6 +531,7 @@ export async function runProjectWorkItem(params: {
         projectRoot: activeProjectRoot,
         settings: params.settings,
         workItem: params.workItem,
+        managerBrief,
         attempt: input.attempt,
         previousReviewerComment: input.previousReviewerComment,
         previousDiffSummary: input.previousDiffSummary,
@@ -387,8 +539,10 @@ export async function runProjectWorkItem(params: {
       runReviewer: async input => await runReviewerAgent({
         fetcher: params.fetcher,
         project: params.project,
+        projectRoot: activeProjectRoot,
         settings: params.settings,
         workItem: params.workItem,
+        managerBrief,
         workerResult: input.workerResult,
       }),
       updateStatus: async (status) => {
@@ -397,7 +551,7 @@ export async function runProjectWorkItem(params: {
           patch: { status },
         })
         upsertRun({
-          status: status === 'in_progress' || status === 'in_review' || status === 'done' || status === 'blocked' || status === 'cancelled'
+          status: status === 'in_progress' || status === 'in_review' || status === 'done' || status === 'blocked'
             ? status
             : 'in_progress',
         })
@@ -423,6 +577,16 @@ export async function runProjectWorkItem(params: {
 
     let commitHash: string | undefined
     let commitMessage: string | undefined
+    if (reviewResult.passed && params.project.gitEnabled && !params.settings.autoCommit && worktree) {
+      shouldRemoveWorktree = false
+      params.store.addComment({
+        workItemId: params.workItem.id,
+        actorType: 'system',
+        kind: 'commit',
+        content: `자동 커밋이 꺼져 있어서 변경사항을 ${worktree.path} worktree에 보존했어.`,
+      })
+    }
+
     if (reviewResult.passed && params.project.gitEnabled && params.settings.autoCommit) {
       const commit = await commitAgentChangedFiles({
         projectRoot: activeProjectRoot,
@@ -439,6 +603,34 @@ export async function runProjectWorkItem(params: {
           ? `자동 커밋 완료: ${commit.message}${commit.hash ? ` (${commit.hash})` : ''}`
           : `커밋 실패: ${commit.error ?? commit.message}`,
       })
+
+      if (!commit.committed && worktree && reviewResult.changedFiles.length > 0) {
+        shouldRemoveWorktree = false
+        params.store.addComment({
+          workItemId: params.workItem.id,
+          actorType: 'system',
+          kind: 'commit',
+          content: `커밋되지 않은 변경사항을 잃지 않도록 ${worktree.path} worktree를 보존했어.`,
+        })
+      }
+
+      if (commit.committed && worktree) {
+        const integration = await integrateAgentBranchIntoProject({
+          projectRoot: params.project.rootPath,
+          branchName: worktree.branchName,
+        })
+
+        params.store.addComment({
+          workItemId: params.workItem.id,
+          actorType: 'system',
+          kind: 'commit',
+          content: integration.integrated
+            ? `원본 프로젝트에 에이전트 커밋을 반영했어${integration.hash ? `: ${integration.hash}` : '.'}`
+            : integration.conflict
+              ? `원본 프로젝트 반영 중 충돌이 발생했어. ${worktree.branchName} 브랜치를 보존했으니 충돌을 수동으로 확인해줘.\n${integration.error ?? ''}`.trim()
+              : `원본 프로젝트에 자동 반영하지 않았어. ${worktree.branchName} 브랜치를 보존했어.\n${integration.error ?? ''}`.trim(),
+        })
+      }
     }
 
     upsertRun({
@@ -474,7 +666,7 @@ export async function runProjectWorkItem(params: {
     }
   }
   finally {
-    if (worktree && params.project.gitEnabled) {
+    if (worktree && params.project.gitEnabled && shouldRemoveWorktree) {
       await removeAgentWorktree(params.project.rootPath, worktree.path).catch(() => {})
     }
   }

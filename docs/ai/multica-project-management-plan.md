@@ -58,7 +58,7 @@
 - 워커 에이전트는 실제 개발/수정 작업을 수행한다.
 - 리뷰 에이전트는 요구사항 충족 여부와 명백한 버그를 중심으로 검토한다.
 - 에이전트는 외부 CLI가 아니라 API 호출 기반으로 직접 구현한다.
-- 모델 백엔드는 LM Studio, Ollama, OpenRouter를 지원한다.
+- 모델 백엔드는 LM Studio, Ollama, OpenRouter, Codex CLI를 지원한다.
 - AIRI 모델, 워커 모델, 리뷰어 모델을 각각 설정할 수 있다.
 
 ### 작업 실행
@@ -92,7 +92,7 @@
 
 - 리뷰 수정 필요: `in_review` -> `in_progress`
 - 실패: `blocked`
-- 취소: `cancelled`
+- 하지 않기로 한 일감: 상태 변경 대신 삭제
 
 의미:
 
@@ -100,6 +100,7 @@
 - 리뷰 에이전트가 리뷰 중이면 `in_review`.
 - 리뷰 통과 후 커밋까지 완료되면 `done`.
 - 리뷰는 통과했지만 커밋이 실패하면 `done`을 유지하고 "커밋 실패" 코멘트를 기록한다.
+- `cancelled` 상태는 두지 않는다. 필요 없어진 일감은 삭제한다.
 
 ### 커밋과 revert
 
@@ -125,7 +126,7 @@ Multica는 "Linear 같은 이슈/프로젝트 관리 + 에이전트를 1급 팀�
 가져올 개념:
 
 - `project`: 제목, 설명, 상태, 일감 진행률을 가진 컨테이너.
-- `issue`: 상태, 우선순위, 담당자, 부모 일감, 프로젝트, 위치, 댓글, 활동 기록을 가진 일감.
+- `issue`: 상태, 프로젝트, 위치, 댓글, 활동 기록을 가진 일감.
 - `agent`: 모델, 지시문, 상태, 동시성, 권한을 가진 실행자.
 - `agent_task_queue`: 에이전트와 일감 실행을 연결하는 큐.
 - `chat_session`, `chat_message`: AIRI가 일감 생성/수정/상태 알림을 주고받는 대화 표면.
@@ -181,15 +182,6 @@ AIRI에는 이 기능을 끼워 넣을 좋은 지점이 이미 있다.
 - `in_review`
 - `done`
 - `blocked`
-- `cancelled`
-
-우선순위:
-
-- `urgent`
-- `high`
-- `medium`
-- `low`
-- `none`
 
 채팅 MVP 액션:
 
@@ -198,7 +190,7 @@ AIRI에는 이 기능을 끼워 넣을 좋은 지점이 이미 있다.
 - 일감 등록.
 - 일감 상태 확인.
 - 일감 실행 시작.
-- 일감 취소.
+- 일감 삭제.
 - 보드 열기.
 - 워커/리뷰어 설정 확인.
 - 작업 결과 요약 확인.
@@ -290,6 +282,7 @@ AIRI에는 이 기능을 끼워 넣을 좋은 지점이 이미 있다.
 - LM Studio
 - Ollama
 - OpenRouter
+- Codex CLI (`codex debug models`로 사용 가능 모델을 조회하고 `codex exec`로 실행)
 
 전역 설정:
 
@@ -375,7 +368,7 @@ Electron main/renderer 사이의 계약은 공유 모듈에 둔다.
 
 - JSON Schema는 provider 호환성을 위해 명시적인 `type: object`와 `required`를 둔다.
 - 일감 생성 도구는 `identifier`, `title`, `goal`, `acceptanceCriteria`를 받는다.
-- update/start/cancel 계열 도구는 안정적인 일감 id 또는 identifier를 받는다.
+- update/start/delete 계열 도구는 안정적인 일감 id 또는 identifier를 받는다.
 - 도구 응답은 사람이 읽을 수 있는 요약과 구조화 데이터를 함께 반환한다.
 - 상태 변경 알림은 짧게 유지한다.
 
@@ -401,7 +394,7 @@ Electron main/renderer 사이의 계약은 공유 모듈에 둔다.
 - `ProjectBoardToolbar.vue`: 프로젝트 정보, 필터, 새 일감 버튼.
 - `KanbanBoard.vue`: 상태 컬럼 구성.
 - `KanbanColumn.vue`: 상태별 일감 목록.
-- `WorkItemCard.vue`: identifier, 제목, 상태, 우선순위, 마지막 코멘트.
+- `WorkItemCard.vue`: identifier, 제목, 상태, 마지막 코멘트.
 - `WorkItemDetailPanel.vue`: 목표, 완료 조건, diff 요약, 워커/리뷰어 코멘트.
 - `CreateWorkItemDialog.vue`: identifier, 제목, 목표, 완료 조건 입력.
 
@@ -505,7 +498,7 @@ main-process project-management service를 만든다.
 
 - 완료.
 - 추가 파일: `apps/stage-tamagotchi/src/renderer/pages/settings/project-management.vue`.
-- 포함 내용: 프로젝트 폴더/prefix 등록, 등록 프로젝트 목록/삭제, git 가능 여부 표시, AIRI/Worker/Reviewer provider/model/base URL/API key/system prompt 설정, 자동 커밋, 리뷰 재시도 수, 타임아웃, shell allow/deny list, 금지 경로 설정.
+- 포함 내용: 프로젝트 폴더/prefix 등록, 등록 프로젝트 목록/삭제, git 가능 여부 표시, Project Manager/Worker/Reviewer provider/model/base URL/API key/system prompt 설정, Codex CLI 모델 직접 조회, 자동 커밋, 리뷰 재시도 수, 타임아웃, shell allow/deny list, 금지 경로 설정.
 - 검증:
   - `pnpm -F @proj-airi/stage-tamagotchi typecheck`
 
@@ -517,7 +510,7 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 
 - 프로젝트 등록/목록 도구.
 - 일감 등록/목록/수정 도구.
-- 일감 실행/취소 도구.
+- 일감 실행/삭제 도구.
 - 보드 열기 도구.
 - 일감 등록 시 AIRI가 목표와 완료 조건을 질문하도록 프롬프트/도구 흐름 정리.
 - 기존 built-in tool 테스트 패턴을 따른 테스트.
@@ -618,7 +611,7 @@ LLM에서 호출 가능한 내장 도구를 만든다.
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/agent-runtime.test.ts`
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/orchestrator.test.ts`
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/review-loop.test.ts`
-- 포함 내용: LM Studio/Ollama/OpenRouter OpenAI-compatible API 호출, JSON action 기반 워커 tool loop, worktree 기반 실행 디렉토리 연결, worker/reviewer retry loop, reviewer feedback 재전달, 상태 전이, 워커 착수/리뷰 요청/리뷰어 착수/리뷰 결과/테스트/diff 코멘트 hook, 최대 재시도 실패 시 worktree 정리와 `blocked` 처리.
+- 포함 내용: LM Studio/Ollama/OpenRouter OpenAI-compatible API 호출, Codex CLI 모델 조회와 read-only `codex exec` 호출, JSON action 기반 워커 tool loop, worktree 기반 실행 디렉토리 연결, worker/reviewer retry loop, reviewer feedback 재전달, 상태 전이, 워커 착수/리뷰 요청/리뷰어 착수/리뷰 결과/테스트/diff 코멘트 hook, 최대 재시도 실패 시 worktree 정리와 `blocked` 처리.
 - 검증:
   - `pnpm -F @proj-airi/stage-tamagotchi exec vitest run src/main/services/airi/project-runner/agent-runtime.test.ts src/main/services/airi/project-runner/review-loop.test.ts`
   - `pnpm -F @proj-airi/stage-tamagotchi typecheck`
@@ -633,7 +626,8 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 - 일감 번호 포함 커밋 메시지 생성.
 - 자동 커밋 기본값.
 - 설정에 따라 사용자 승인 후 커밋.
-- 커밋 실패 시 `done` 유지 + "커밋 실패" 코멘트 기록.
+- 커밋 실패 시 `done` 유지 + "커밋 실패" 코멘트 기록 + 미커밋 worktree 보존.
+- 자동 커밋이 꺼져 있으면 리뷰를 통과한 worktree를 삭제하지 않고 보존.
 
 산출물:
 
@@ -645,7 +639,7 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 - 추가 파일:
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/git.ts`
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/git.test.ts`
-- 포함 내용: shell interpolation 없는 git 실행, 일감별 git worktree/branch 생성과 제거, 에이전트 변경 파일만 stage, 일감 번호 포함 conventional commit message 생성, short hash 반환, commit 실패 결과 객체, 에이전트 변경 파일만 `git restore` revert, diff stat 요약.
+- 포함 내용: shell interpolation 없는 git 실행, 일감별 git worktree/branch 생성과 조건부 제거, 에이전트 변경 파일만 stage, 일감 번호 포함 conventional commit message 생성, short hash 반환, commit 실패 결과 객체, 미커밋 변경 보존, 에이전트 변경 파일만 `git restore` revert, diff stat 요약.
 - 검증:
   - `pnpm -F @proj-airi/stage-tamagotchi exec vitest run src/main/services/airi/project-runner/git.test.ts`
   - `pnpm -F @proj-airi/stage-tamagotchi typecheck`
@@ -661,7 +655,7 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 - 일감 카드.
 - 상세 패널.
 - diff 요약과 워커/리뷰어 코멘트 표시.
-- 실행/취소 버튼.
+- 실행/삭제 버튼.
 - drag/drop 없음.
 
 산출물:
@@ -674,7 +668,7 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 - 추가 파일:
   - `apps/stage-tamagotchi/src/main/services/airi/http-server/http/project-board/index.ts`
   - `apps/stage-tamagotchi/src/main/services/airi/http-server/http/project-board/index.test.ts`
-- 포함 내용: `http://127.0.0.1:<port>/project-board` HTML 보드, snapshot API, work item status API, 상태별 컬럼, 카드, 상세 패널, comment 표시, Start/Review/Cancel 상태 버튼, AIRI 채팅 `open_board` 도구의 실제 URL 조회.
+- 포함 내용: `http://127.0.0.1:<port>/project-board` HTML 보드, snapshot API, runner-backed work item start API, 상태별 컬럼, 카드, 상세 패널, comment 표시, TODO 전용 Start 버튼, 일감 삭제 버튼, AIRI 채팅 `open_board` 도구의 실제 URL 조회.
 - 검증:
   - `pnpm -F @proj-airi/stage-tamagotchi exec vitest run src/main/services/airi/http-server/http/project-board/index.test.ts src/renderer/stores/tools/builtin/project-management.test.ts`
   - `pnpm -F @proj-airi/stage-tamagotchi typecheck`

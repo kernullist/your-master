@@ -13,7 +13,6 @@ function item(id: string, status: WorkItem['status'], position: number): WorkIte
     goal: 'Goal',
     acceptanceCriteria: ['Done'],
     status,
-    priority: 'none',
     position,
     createdAt: 1,
     updatedAt: 1,

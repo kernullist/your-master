@@ -3,6 +3,7 @@ import type { Project, WorkItem } from '@proj-airi/stage-projects'
 import type {
   CreateProjectWorkItemPayload,
   CreateProjectWorkItemResult,
+  DeleteProjectWorkItemPayload,
   ProjectManagementSnapshot,
   RegisterProjectPayload,
   StartProjectWorkItemPayload,
@@ -41,7 +42,6 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
       goal: payload.goal,
       acceptanceCriteria: payload.acceptanceCriteria,
       status: 'todo',
-      priority: 'none',
       position: 0,
       createdAt: 1,
       updatedAt: 1,
@@ -56,7 +56,6 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
     goal: payload.patch.goal ?? 'Show board',
     acceptanceCriteria: payload.patch.acceptanceCriteria ?? ['Done'],
     status: payload.patch.status ?? 'todo',
-    priority: 'none',
     position: 0,
     createdAt: 1,
     updatedAt: 2,
@@ -66,6 +65,7 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
     started: true,
     message: `${payload.identifier ?? payload.workItemId} 작업을 시작했어. 상태를 in_progress로 바꿨어.`,
   }))
+  const deleteWorkItemMock = vi.fn(async (_payload: DeleteProjectWorkItemPayload): Promise<void> => {})
 
   return {
     getSnapshot: vi.fn(async (): Promise<ProjectManagementSnapshot> => ({
@@ -87,7 +87,6 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
         goal: 'Show board',
         acceptanceCriteria: ['Done'],
         status: 'todo',
-        priority: 'none',
         position: 0,
         createdAt: 1,
         updatedAt: 1,
@@ -95,7 +94,7 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
       comments: [],
       runs: [],
       settings: {
-        airi: { provider: 'lm-studio', model: 'airi', systemPrompt: 'AIRI' },
+        projectManager: { provider: 'lm-studio', model: 'project-manager', systemPrompt: 'Project Manager' },
         worker: { provider: 'lm-studio', model: 'worker', systemPrompt: 'Worker' },
         reviewer: { provider: 'lm-studio', model: 'reviewer', systemPrompt: 'Reviewer' },
         maxReviewRetries: 5,
@@ -111,6 +110,7 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
     openBoardExternal: vi.fn(async () => ({ opened: true, url: 'http://127.0.0.1:3000/project-board' })),
     registerProject: registerProjectMock,
     createWorkItem: createWorkItemMock,
+    deleteWorkItem: deleteWorkItemMock,
     updateWorkItem: updateWorkItemMock,
     startWorkItem: startWorkItemMock,
   }
@@ -183,7 +183,6 @@ describe('project management built-in tool', () => {
         goal: 'Existing goal',
         acceptanceCriteria: ['Done'],
         status: 'todo',
-        priority: 'none',
         position: 0,
         createdAt: 1,
         updatedAt: 1,
@@ -233,6 +232,17 @@ describe('project management built-in tool', () => {
     })
   })
 
+  it('deletes a work item through Eventa invokers', async () => {
+    const invokers = createInvokers()
+    const result = await executeProjectManagementAction({
+      action: 'delete_work_item',
+      workItemId: 'work-1',
+    }, { invokers })
+
+    expect(result).toContain('Deleted work item work-1')
+    expect(invokers.deleteWorkItem).toHaveBeenCalledWith({ id: 'work-1' })
+  })
+
   it('lists work items filtered by status', async () => {
     const invokers = createInvokers({
       workItems: [
@@ -244,7 +254,6 @@ describe('project management built-in tool', () => {
           goal: 'Show board',
           acceptanceCriteria: ['Done'],
           status: 'todo',
-          priority: 'none',
           position: 0,
           createdAt: 1,
           updatedAt: 1,
@@ -257,7 +266,6 @@ describe('project management built-in tool', () => {
           goal: 'Done',
           acceptanceCriteria: ['Done'],
           status: 'done',
-          priority: 'none',
           position: 1,
           createdAt: 1,
           updatedAt: 1,

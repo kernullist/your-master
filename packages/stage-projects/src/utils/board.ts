@@ -1,8 +1,8 @@
 import type { WorkItem, WorkItemStatus } from '../types/work-item.ts'
 
-export const WORK_ITEM_STATUSES: WorkItemStatus[] = ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']
+export const WORK_ITEM_STATUSES: WorkItemStatus[] = ['todo', 'in_progress', 'in_review', 'done', 'blocked']
 
-export const ACTIVE_WORK_ITEM_STATUSES: WorkItemStatus[] = ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']
+export const ACTIVE_WORK_ITEM_STATUSES: WorkItemStatus[] = ['todo', 'in_progress', 'in_review', 'blocked']
 
 const statusOrder = new Map(WORK_ITEM_STATUSES.map((status, index) => [status, index]))
 
@@ -25,7 +25,6 @@ export function groupWorkItemsByStatus(items: WorkItem[]): Record<WorkItemStatus
     in_review: [],
     done: [],
     blocked: [],
-    cancelled: [],
   }
   for (const item of items) {
     groups[item.status].push(item)
@@ -70,7 +69,7 @@ export function sortWorkItemsForBoard(items: WorkItem[]): WorkItem[] {
  * Returns:
  * - The status AIRI should persist on the work item
  */
-export function statusForRunnerEvent(event: 'start-worker' | 'start-review' | 'request-changes' | 'pass-review' | 'block' | 'cancel'): WorkItemStatus {
+export function statusForRunnerEvent(event: 'start-worker' | 'start-review' | 'request-changes' | 'pass-review' | 'block'): WorkItemStatus {
   switch (event) {
     case 'start-worker':
     case 'request-changes':
@@ -81,7 +80,5 @@ export function statusForRunnerEvent(event: 'start-worker' | 'start-review' | 'r
       return 'done'
     case 'block':
       return 'blocked'
-    case 'cancel':
-      return 'cancelled'
   }
 }

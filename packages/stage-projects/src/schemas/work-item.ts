@@ -1,8 +1,6 @@
 import * as v from 'valibot'
 
-export const workItemStatusSchema = v.picklist(['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled'])
-
-export const workItemPrioritySchema = v.picklist(['urgent', 'high', 'medium', 'low', 'none'])
+export const workItemStatusSchema = v.picklist(['todo', 'in_progress', 'in_review', 'done', 'blocked'])
 
 export const createWorkItemInputSchema = v.object({
   projectId: v.pipe(v.string(), v.nonEmpty()),
@@ -11,7 +9,6 @@ export const createWorkItemInputSchema = v.object({
   goal: v.pipe(v.string(), v.nonEmpty()),
   acceptanceCriteria: v.pipe(v.array(v.pipe(v.string(), v.nonEmpty())), v.minLength(1)),
   commitPrefix: v.optional(v.pipe(v.string(), v.nonEmpty())),
-  priority: v.optional(workItemPrioritySchema),
   dueAt: v.optional(v.number()),
 })
 
@@ -21,7 +18,6 @@ export const updateWorkItemInputSchema = v.partial(v.object({
   acceptanceCriteria: v.pipe(v.array(v.pipe(v.string(), v.nonEmpty())), v.minLength(1)),
   commitPrefix: v.nullable(v.pipe(v.string(), v.nonEmpty())),
   status: workItemStatusSchema,
-  priority: workItemPrioritySchema,
   position: v.number(),
   dueAt: v.nullable(v.number()),
 }))
@@ -35,7 +31,6 @@ export const workItemSchema = v.object({
   acceptanceCriteria: v.pipe(v.array(v.pipe(v.string(), v.nonEmpty())), v.minLength(1)),
   commitPrefix: v.optional(v.pipe(v.string(), v.nonEmpty())),
   status: workItemStatusSchema,
-  priority: workItemPrioritySchema,
   position: v.number(),
   dueAt: v.optional(v.number()),
   createdAt: v.number(),

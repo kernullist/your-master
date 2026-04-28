@@ -1,6 +1,4 @@
-export type WorkItemStatus = 'todo' | 'in_progress' | 'in_review' | 'done' | 'blocked' | 'cancelled'
-
-export type WorkItemPriority = 'urgent' | 'high' | 'medium' | 'low' | 'none'
+export type WorkItemStatus = 'todo' | 'in_progress' | 'in_review' | 'done' | 'blocked'
 
 export type WorkItemActorType = 'user' | 'airi' | 'worker' | 'reviewer' | 'system'
 
@@ -24,8 +22,6 @@ export interface WorkItem {
   commitPrefix?: string
   /** Current execution status. */
   status: WorkItemStatus
-  /** User-facing priority. */
-  priority: WorkItemPriority
   /** Optional branch/worktree-ready ordering value for future board sorting. */
   position: number
   /** Optional epoch milliseconds due date. */
@@ -52,8 +48,6 @@ export interface CreateWorkItemInput {
   acceptanceCriteria: string[]
   /** Optional external tracker prefix prepended to automatic commit messages. */
   commitPrefix?: string
-  /** Optional user-facing priority. */
-  priority?: WorkItemPriority
   /** Optional epoch milliseconds due date. */
   dueAt?: number
 }
@@ -72,8 +66,6 @@ export interface UpdateWorkItemInput {
   commitPrefix?: string | null
   /** New workflow status. */
   status?: WorkItemStatus
-  /** New priority. */
-  priority?: WorkItemPriority
   /** New board ordering position. */
   position?: number
   /** New due date; null clears the field. */

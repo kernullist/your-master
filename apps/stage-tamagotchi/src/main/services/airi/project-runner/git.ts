@@ -32,6 +32,20 @@ export interface AgentCommitResult {
 }
 
 /**
+ * Result of integrating an agent branch back into the user's project worktree.
+ */
+export interface AgentIntegrationResult {
+  /** True when the agent commit was applied to the original project worktree. */
+  integrated: boolean
+  /** True when git reported a content conflict and AIRI aborted the cherry-pick. */
+  conflict: boolean
+  /** Commit hash currently checked out in the original project after integration. */
+  hash?: string
+  /** Failure summary shown to the board when integration is unsafe or conflicted. */
+  error?: string
+}
+
+/**
  * Metadata for an isolated agent git worktree.
  */
 export interface AgentWorktree {
@@ -40,6 +54,8 @@ export interface AgentWorktree {
   /** Branch checked out inside the worktree. */
   branchName: string
 }
+
+const projectIntegrationQueues = new Map<string, Promise<void>>()
 
 /**
  * Runs git with array arguments from a project root.
@@ -76,10 +92,48 @@ export async function runGit(projectRoot: string, args: string[]): Promise<GitCo
   })
 }
 
+/**
+ * Runs one critical git integration step at a time for a project.
+ *
+ * Use when:
+ * - Multiple worker/reviewer branches may finish at nearly the same time
+ * - AIRI needs the original project worktree to receive commits in a stable order
+ *
+ * Expects:
+ * - `task` does not wait for user input while holding the project queue
+ *
+ * Returns:
+ * - The task result after every earlier integration for the same project has completed
+ */
+export async function runWithProjectGitIntegrationLock<T>(projectRoot: string, task: () => Promise<T>): Promise<T> {
+  const key = resolveProjectToolPath(projectRoot, '.').absolutePath
+  const previous = projectIntegrationQueues.get(key)?.catch(() => {}) ?? Promise.resolve()
+  let release!: () => void
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const queued = previous.then(() => current)
+  projectIntegrationQueues.set(key, queued)
+
+  await previous
+  try {
+    return await task()
+  }
+  finally {
+    release()
+    if (projectIntegrationQueues.get(key) === queued)
+      projectIntegrationQueues.delete(key)
+  }
+}
+
 function normalizeAgentChangedFiles(projectRoot: string, files: string[]): string[] {
   return [...new Set(files)]
     .map(file => resolveProjectToolPath(projectRoot, file).relativePath)
     .filter(file => file !== '.')
+}
+
+function trimGitOutput(result: GitCommandResult): string {
+  return (result.stderr || result.stdout).trim()
 }
 
 /**
@@ -118,6 +172,23 @@ export function buildAgentWorktreeBranchName(workItem: Pick<WorkItem, 'identifie
 }
 
 /**
+ * Builds a unique branch name for a specific agent run.
+ *
+ * Use when:
+ * - The same work item may be retried or restarted while a previous branch still exists
+ * - Concurrent agent runs must never reset each other's branches
+ *
+ * Expects:
+ * - `runId` is stable for one runner invocation
+ *
+ * Returns:
+ * - A git branch name such as `airi/work/airi-12/run-abc`
+ */
+export function buildAgentRunWorktreeBranchName(workItem: Pick<WorkItem, 'identifier'>, runId: string): string {
+  return `${buildAgentWorktreeBranchName(workItem)}/${normalizeWorktreeSlug(runId)}`
+}
+
+/**
  * Builds the default local path for an agent worktree.
  *
  * Use when:
@@ -133,6 +204,22 @@ export function buildAgentWorktreeBranchName(workItem: Pick<WorkItem, 'identifie
 export function buildAgentWorktreePath(projectRoot: string, workItem: Pick<WorkItem, 'identifier'>): string {
   const root = resolveProjectToolPath(projectRoot, '.').absolutePath
   return join(dirname(root), '.airi-worktrees', basename(root), normalizeWorktreeSlug(workItem.identifier))
+}
+
+/**
+ * Builds a unique worktree path for a specific agent run.
+ *
+ * Use when:
+ * - AIRI starts a runner invocation that should not reuse an older checkout folder
+ *
+ * Expects:
+ * - `runId` is stable for one runner invocation
+ *
+ * Returns:
+ * - A sibling `.airi-worktrees/<project>/<work-item>/<run-id>` path
+ */
+export function buildAgentRunWorktreePath(projectRoot: string, workItem: Pick<WorkItem, 'identifier'>, runId: string): string {
+  return join(buildAgentWorktreePath(projectRoot, workItem), normalizeWorktreeSlug(runId))
 }
 
 /**
@@ -180,7 +267,7 @@ export async function createAgentWorktree(params: {
  * Removes an agent-owned git worktree.
  *
  * Use when:
- * - A blocked/cancelled run should clean up isolated files
+ * - A blocked run should clean up isolated files
  * - AIRI no longer needs the temporary worktree checkout
  *
  * Expects:
@@ -359,4 +446,65 @@ export async function commitAgentChangedFiles(params: {
     hash: hash.stdout.trim() || undefined,
     message,
   }
+}
+
+/**
+ * Integrates a committed agent branch into the user's original project worktree.
+ *
+ * Use when:
+ * - Auto commit succeeded inside an isolated agent worktree
+ * - AIRI should serialize multiple finished agent branches before applying them
+ *
+ * Expects:
+ * - `branchName` points at the agent commit to cherry-pick
+ * - The original project worktree should be clean before integration starts
+ *
+ * Returns:
+ * - Integration status; on conflict, the cherry-pick is aborted and the branch is preserved
+ *
+ * Call stack:
+ *
+ * project runner
+ *   -> {@link integrateAgentBranchIntoProject}
+ *     -> {@link runWithProjectGitIntegrationLock}
+ *       -> git cherry-pick
+ */
+export async function integrateAgentBranchIntoProject(params: {
+  branchName: string
+  projectRoot: string
+}): Promise<AgentIntegrationResult> {
+  return await runWithProjectGitIntegrationLock(params.projectRoot, async () => {
+    const dirty = await runGit(params.projectRoot, ['status', '--porcelain'])
+    if (dirty.exitCode !== 0) {
+      return {
+        integrated: false,
+        conflict: false,
+        error: trimGitOutput(dirty) || 'git status failed before agent branch integration.',
+      }
+    }
+    if (dirty.stdout.trim()) {
+      return {
+        integrated: false,
+        conflict: false,
+        error: 'Original project worktree has local changes. Agent branch was preserved for manual integration.',
+      }
+    }
+
+    const cherryPick = await runGit(params.projectRoot, ['cherry-pick', params.branchName])
+    if (cherryPick.exitCode !== 0) {
+      await runGit(params.projectRoot, ['cherry-pick', '--abort'])
+      return {
+        integrated: false,
+        conflict: true,
+        error: trimGitOutput(cherryPick) || 'git cherry-pick failed while integrating the agent branch.',
+      }
+    }
+
+    const hash = await runGit(params.projectRoot, ['rev-parse', '--short', 'HEAD'])
+    return {
+      integrated: true,
+      conflict: false,
+      hash: hash.stdout.trim() || undefined,
+    }
+  })
 }

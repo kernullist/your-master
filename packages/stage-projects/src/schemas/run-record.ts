@@ -4,7 +4,7 @@ import * as v from 'valibot'
 export const workItemRunRecordSchema = v.object({
   id: v.pipe(v.string(), v.nonEmpty()),
   workItemId: v.pipe(v.string(), v.nonEmpty()),
-  status: v.picklist(['queued', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']),
+  status: v.picklist(['queued', 'in_progress', 'in_review', 'done', 'blocked']),
   attempt: v.pipe(v.number(), v.integer(), v.minValue(0)),
   changedFiles: v.array(v.string()),
   worktreePath: v.optional(v.string()),

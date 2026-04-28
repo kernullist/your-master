@@ -22,7 +22,7 @@ export interface ProjectManagementSnapshot {
   comments: WorkItemComment[]
   /** Worker/reviewer run summaries. */
   runs: WorkItemRunRecord[]
-  /** Global AIRI/worker/reviewer settings. */
+  /** Global project manager/worker/reviewer settings. */
   settings: ProjectAgentSettings
 }
 
@@ -68,6 +68,14 @@ export interface UpdateProjectWorkItemPayload {
   id: string
   /** Partial update body. */
   patch: UpdateWorkItemInput
+}
+
+/**
+ * Payload used to delete one work item and its local execution notes.
+ */
+export interface DeleteProjectWorkItemPayload {
+  /** Stable work item id. */
+  id: string
 }
 
 /**
@@ -120,14 +128,30 @@ export interface StartProjectWorkItemResult {
   dirtyFiles?: string[]
 }
 
+/**
+ * One Codex CLI model option discovered from the installed local CLI.
+ */
+export interface CodexCliModelOption {
+  /** Stable model slug passed to `codex --model`. */
+  id: string
+  /** Human-friendly display name when Codex provides one. */
+  name?: string
+  /** Default reasoning effort reported by Codex, if present. */
+  defaultReasoningEffort?: string
+  /** Supported reasoning efforts reported by Codex, if present. */
+  supportedReasoningEfforts: string[]
+}
+
 export const projectManagementGetSnapshot = defineInvokeEventa<ProjectManagementSnapshot>('eventa:invoke:project-management:get-snapshot')
 export const projectManagementRegisterProject = defineInvokeEventa<Project, RegisterProjectPayload>('eventa:invoke:project-management:register-project')
 export const projectManagementDeleteProject = defineInvokeEventa<void, { id: string }>('eventa:invoke:project-management:delete-project')
 export const projectManagementCreateWorkItem = defineInvokeEventa<CreateProjectWorkItemResult, CreateProjectWorkItemPayload>('eventa:invoke:project-management:create-work-item')
 export const projectManagementUpdateWorkItem = defineInvokeEventa<WorkItem, UpdateProjectWorkItemPayload>('eventa:invoke:project-management:update-work-item')
+export const projectManagementDeleteWorkItem = defineInvokeEventa<void, DeleteProjectWorkItemPayload>('eventa:invoke:project-management:delete-work-item')
 export const projectManagementAddComment = defineInvokeEventa<WorkItemComment, AddProjectWorkItemCommentPayload>('eventa:invoke:project-management:add-comment')
 export const projectManagementUpsertRunRecord = defineInvokeEventa<WorkItemRunRecord, UpsertProjectRunRecordPayload>('eventa:invoke:project-management:upsert-run-record')
 export const projectManagementUpdateSettings = defineInvokeEventa<ProjectAgentSettings, Partial<ProjectAgentSettings>>('eventa:invoke:project-management:update-settings')
+export const projectManagementListCodexCliModels = defineInvokeEventa<{ models: CodexCliModelOption[] }>('eventa:invoke:project-management:list-codex-cli-models')
 export const projectManagementStartWorkItem = defineInvokeEventa<StartProjectWorkItemResult, StartProjectWorkItemPayload>('eventa:invoke:project-management:start-work-item')
 export const projectManagementGetBoardUrl = defineInvokeEventa<{ url?: string }>('eventa:invoke:project-management:get-board-url')
 export const projectManagementOpenBoardExternal = defineInvokeEventa<{ opened: boolean, url?: string }>('eventa:invoke:project-management:open-board-external')

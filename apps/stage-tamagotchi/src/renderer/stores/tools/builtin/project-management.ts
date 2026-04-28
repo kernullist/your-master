@@ -16,6 +16,7 @@ import { rawTool } from '@xsai/tool'
 
 import {
   projectManagementCreateWorkItem,
+  projectManagementDeleteWorkItem,
   projectManagementGetBoardUrl,
   projectManagementGetSnapshot,
   projectManagementOpenBoardExternal,
@@ -130,6 +131,21 @@ type ProjectManagementActionInput
     workItemId?: string
     status?: UpdateProjectWorkItemPayload['patch']['status']
   }
+  | {
+    action: 'delete_work_item'
+    workItemId: string
+    projectId?: string
+    rootPath?: string
+    issuePrefix?: string
+    identifier?: string
+    title?: string
+    goal?: string
+    acceptanceCriteria?: string[] | string
+    commitPrefix?: string
+    allowDuplicateIdentifier?: boolean
+    allowDirtyWorktree?: boolean
+    status?: UpdateProjectWorkItemPayload['patch']['status']
+  }
 
 export type ProjectManagementInvokers = ReturnType<typeof createInvokers>
 
@@ -144,6 +160,7 @@ function createInvokers() {
     openBoardExternal: defineInvoke(context, projectManagementOpenBoardExternal),
     registerProject: defineInvoke(context, projectManagementRegisterProject),
     createWorkItem: defineInvoke(context, projectManagementCreateWorkItem),
+    deleteWorkItem: defineInvoke(context, projectManagementDeleteWorkItem),
     updateWorkItem: defineInvoke(context, projectManagementUpdateWorkItem),
     startWorkItem: defineInvoke(context, projectManagementStartWorkItem),
   }
@@ -166,7 +183,7 @@ const projectManagementParams = {
   properties: {
     action: {
       type: 'string',
-      enum: ['list_projects', 'register_project', 'list_work_items', 'create_work_item', 'update_work_item', 'start_work_item', 'open_board'],
+      enum: ['list_projects', 'register_project', 'list_work_items', 'create_work_item', 'update_work_item', 'delete_work_item', 'start_work_item', 'open_board'],
       description: 'Choose one project-management action.',
     },
     rootPath: {
@@ -207,7 +224,7 @@ const projectManagementParams = {
     workItemId: nullableStringSchema,
     status: {
       type: ['string', 'null'],
-      enum: ['todo', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled', null],
+      enum: ['todo', 'in_progress', 'in_review', 'done', 'blocked', null],
     },
   },
   required: [
@@ -262,7 +279,6 @@ function summarizeSnapshot(snapshot: ProjectManagementSnapshot, projectId?: stri
       identifier: item.identifier,
       title: item.title,
       status: item.status,
-      priority: item.priority,
     })),
   }, null, 2)
 }
@@ -423,6 +439,10 @@ export async function executeProjectManagementAction(
       })
       return `Updated work item ${workItem.identifier}: ${workItem.status}.`
     }
+    case 'delete_work_item': {
+      await invokers.deleteWorkItem({ id: input.workItemId })
+      return `Deleted work item ${input.workItemId}.`
+    }
     case 'start_work_item': {
       const payload: StartProjectWorkItemPayload = {
         workItemId: input.workItemId ?? undefined,
@@ -453,7 +473,7 @@ export async function executeProjectManagementAction(
 const tools: Tool[] = [
   rawTool({
     name: 'stage_project_management',
-    description: 'Manage AIRI local project work: register projects, list projects, create/list/update work items, and open the local board.',
+    description: 'Manage AIRI local project work: register projects, list projects, create/list/update/delete work items, and open the local board.',
     execute: params => executeProjectManagementAction(params as ProjectManagementActionInput),
     parameters: projectManagementParams,
   }),

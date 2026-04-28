@@ -22,7 +22,7 @@ describe('project management service', () => {
       comments: [],
       runs: [],
       settings: {
-        airi: { provider: 'ollama', model: '', systemPrompt: 'AIRI' },
+        projectManager: { provider: 'ollama', model: '', systemPrompt: 'Project Manager' },
         worker: { provider: 'ollama', model: '', systemPrompt: 'Worker' },
         reviewer: { provider: 'ollama', model: '', systemPrompt: 'Reviewer' },
         maxReviewRetries: 5,

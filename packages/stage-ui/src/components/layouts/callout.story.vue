@@ -22,7 +22,7 @@ import { Callout } from '@proj-airi/ui'
             Primary theme.
           </div>
           <div>
-            The Project AIRI theme, powered by our <a decoration-underline decoration-dashed href="https://github.com/proj-airi/chromatic">Chromatic</a> design system.
+            The Your Master theme, powered by our <a decoration-underline decoration-dashed href="https://github.com/proj-airi/chromatic">Chromatic</a> design system.
           </div>
         </div>
       </Callout>

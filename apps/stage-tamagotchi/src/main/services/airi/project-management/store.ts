@@ -23,7 +23,6 @@ import {
   normalizeIssuePrefix,
   normalizeWorkItemIdentifier,
 } from '@proj-airi/stage-projects'
-import { defu } from 'defu'
 
 /**
  * Local project-management persistence shape.
@@ -86,6 +85,69 @@ function toSnapshot(state: ProjectManagementState): ProjectManagementSnapshot {
     comments: [...state.comments],
     runs: [...state.runs],
     settings: state.settings,
+  }
+}
+
+/**
+ * Normalizes project setting string lists while preserving user order.
+ *
+ * Before:
+ * - `["rm", "del", "rm", " del "]`
+ *
+ * After:
+ * - `["rm", "del"]`
+ */
+function normalizeUniqueStringList(items: string[] | undefined, fallback: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+
+  for (const item of items ?? fallback) {
+    const normalized = item.trim()
+    if (!normalized || seen.has(normalized))
+      continue
+
+    seen.add(normalized)
+    result.push(normalized)
+  }
+
+  return result
+}
+
+/**
+ * Merges project agent settings without concatenating arrays.
+ *
+ * Use when:
+ * - The settings screen saves a full settings snapshot
+ * - Chat tools patch only one or two top-level settings fields
+ *
+ * Expects:
+ * - Nested agent model configs should keep previous fields when a patch omits them
+ *
+ * Returns:
+ * - Settings with list fields replaced and de-duplicated
+ */
+export function mergeProjectAgentSettings(
+  current: ProjectAgentSettings,
+  patch: Partial<ProjectAgentSettings>,
+): ProjectAgentSettings {
+  return {
+    ...current,
+    ...patch,
+    projectManager: {
+      ...current.projectManager,
+      ...patch.projectManager,
+    },
+    worker: {
+      ...current.worker,
+      ...patch.worker,
+    },
+    reviewer: {
+      ...current.reviewer,
+      ...patch.reviewer,
+    },
+    shellDenylist: normalizeUniqueStringList(patch.shellDenylist, current.shellDenylist),
+    shellAllowlist: normalizeUniqueStringList(patch.shellAllowlist, current.shellAllowlist),
+    forbiddenPathPatterns: normalizeUniqueStringList(patch.forbiddenPathPatterns, current.forbiddenPathPatterns),
   }
 }
 
@@ -230,7 +292,6 @@ export function createProjectManagementStore(
         acceptanceCriteria: payload.acceptanceCriteria.map(item => item.trim()).filter(Boolean),
         commitPrefix: payload.commitPrefix?.trim() || undefined,
         status: 'todo',
-        priority: payload.priority ?? 'none',
         position: state.workItems.filter(item => item.projectId === payload.projectId).length,
         dueAt: payload.dueAt,
         createdAt: now,
@@ -306,10 +367,10 @@ export function createProjectManagementStore(
     },
 
     /**
-     * Merges global AIRI/worker/reviewer settings.
+     * Merges global project manager/worker/reviewer settings.
      */
     updateSettings(patch: Partial<ProjectAgentSettings>): ProjectAgentSettings {
-      state.settings = defu(patch, state.settings)
+      state.settings = mergeProjectAgentSettings(state.settings, patch)
       commit()
       return state.settings
     },

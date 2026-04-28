@@ -86,7 +86,7 @@ const projectAIRIAsciiArt = computed(() => {
 })
 
 const projectAIRIMetadata = `
-Project AIRI team from Moeru AI (https://moeru.ai) and other contributors
+Your Master team from Moeru AI (https://moeru.ai) and other contributors
 Open sourced on https://github.com/moeru-ai/airi
 `
 
@@ -97,7 +97,7 @@ const bootMessages = computed<BootMessage[]>(() => [
     withoutTimestamp: true,
   })),
   {
-    template: `Project AIRI version ${import.meta.env.VITE_AIRI_VERSION || '1.0.0'} @ ${import.meta.env.VITE_AIRI_COMMIT || '0240602'} build`,
+    template: `Your Master version ${import.meta.env.VITE_AIRI_VERSION || '1.0.0'} @ ${import.meta.env.VITE_AIRI_COMMIT || '0240602'} build`,
     typingSpeed: 5,
     withoutTimestamp: true,
   },

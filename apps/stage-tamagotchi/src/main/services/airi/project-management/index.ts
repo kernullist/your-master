@@ -1,3 +1,8 @@
+import type {
+  StartProjectWorkItemPayload,
+  StartProjectWorkItemResult,
+} from '../../../../shared/eventa/project-management'
+
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -20,7 +25,9 @@ import {
   projectManagementAddComment,
   projectManagementCreateWorkItem,
   projectManagementDeleteProject,
+  projectManagementDeleteWorkItem,
   projectManagementGetSnapshot,
+  projectManagementListCodexCliModels,
   projectManagementRegisterProject,
   projectManagementSnapshotChanged,
   projectManagementStartWorkItem,
@@ -30,6 +37,7 @@ import {
   projectManagementWorkItemStatusChanged,
 } from '../../../../shared/eventa/project-management'
 import { createConfig } from '../../../libs/electron/persistence'
+import { listCodexCliModels } from '../project-runner/agent-runtime'
 import { runProjectWorkItem } from '../project-runner/orchestrator'
 import { inspectGitDirtyFiles } from '../project-runner/tools'
 import {
@@ -39,9 +47,9 @@ import {
 
 const log = useLogg('project-management').useGlobalConfig()
 
-/** Schema for global AIRI/worker/reviewer settings persisted in Electron userData. */
+/** Schema for global project manager/worker/reviewer settings persisted in Electron userData. */
 export const projectAgentSettingsPersistenceSchema = v.object({
-  airi: agentModelConfigSchema,
+  projectManager: agentModelConfigSchema,
   worker: agentModelConfigSchema,
   reviewer: agentModelConfigSchema,
   maxReviewRetries: v.pipe(v.number(), v.integer(), v.minValue(1)),
@@ -158,6 +166,10 @@ export async function setupProjectManagementService() {
 
   defineInvokeHandler(context, projectManagementGetSnapshot, async () => store.getSnapshot())
 
+  defineInvokeHandler(context, projectManagementListCodexCliModels, async () => ({
+    models: await listCodexCliModels(),
+  }))
+
   defineInvokeHandler(context, projectManagementRegisterProject, async (payload) => {
     return store.registerProject({
       ...payload,
@@ -169,17 +181,41 @@ export async function setupProjectManagementService() {
     store.deleteProject(payload.id)
   })
 
+  defineInvokeHandler(context, projectManagementDeleteWorkItem, async (payload) => {
+    store.deleteWorkItem(payload.id)
+  })
+
   defineInvokeHandler(context, projectManagementCreateWorkItem, async payload => store.createWorkItem(payload))
 
   defineInvokeHandler(context, projectManagementUpdateWorkItem, async payload => store.updateWorkItem(payload))
 
-  defineInvokeHandler(context, projectManagementStartWorkItem, async (payload) => {
+  /**
+   * Starts a TODO work item by validating board state and launching the runner.
+   *
+   * Use when:
+   * - AIRI chat asks to begin an issue
+   * - The local project board Start button begins an issue
+   *
+   * Expects:
+   * - Work item exists by id or identifier
+   * - The original project folder is clean unless explicitly allowed
+   *
+   * Returns:
+   * - A user-facing start result and the inspected work item when available
+   *
+   * Call stack:
+   *
+   * setupProjectManagementService
+   *   -> {@link startWorkItem}
+   *     -> {@link runProjectWorkItem}
+   */
+  const startWorkItem = async (payload: StartProjectWorkItemPayload): Promise<StartProjectWorkItemResult> => {
     const snapshot = store.getSnapshot()
-    const workItem = payload.workItemId
+    const foundWorkItem = payload.workItemId
       ? snapshot.workItems.find(item => item.id === payload.workItemId)
       : snapshot.workItems.find(item => item.identifier === payload.identifier?.trim().toUpperCase())
 
-    if (!workItem) {
+    if (!foundWorkItem) {
       return {
         started: false,
         message: payload.identifier
@@ -187,6 +223,7 @@ export async function setupProjectManagementService() {
           : '시작할 일감을 찾지 못했어.',
       }
     }
+    let workItem = foundWorkItem
 
     const missingFields: Array<'goal' | 'acceptanceCriteria'> = []
     if (!workItem.goal.trim())
@@ -211,7 +248,7 @@ export async function setupProjectManagementService() {
       }
     }
 
-    const project = snapshot.projects.find(item => item.id === workItem.projectId)
+    let project = snapshot.projects.find(item => item.id === workItem.projectId)
     if (!project) {
       return {
         started: false,
@@ -229,6 +266,39 @@ export async function setupProjectManagementService() {
           dirtyFiles: dirty.files,
           message: formatDirtyWorktreeStartMessage(workItem.identifier, dirty.files),
         }
+      }
+    }
+
+    if (activeRunWorkItemIds.has(workItem.id)) {
+      return {
+        started: false,
+        workItem,
+        message: `${workItem.identifier}는 이미 실행 중이야.`,
+      }
+    }
+
+    const latestSnapshot = store.getSnapshot()
+    const latestWorkItem = latestSnapshot.workItems.find(item => item.id === workItem.id)
+    if (!latestWorkItem) {
+      return {
+        started: false,
+        message: `${workItem.identifier} 일감이 시작 직전에 삭제됐어.`,
+      }
+    }
+    workItem = latestWorkItem
+    project = latestSnapshot.projects.find(item => item.id === workItem.projectId)
+    if (!project) {
+      return {
+        started: false,
+        workItem,
+        message: `${workItem.identifier}의 프로젝트가 시작 직전에 삭제됐어.`,
+      }
+    }
+    if (workItem.status !== 'todo') {
+      return {
+        started: false,
+        workItem,
+        message: `${workItem.identifier}는 현재 ${workItem.status} 상태라서 TODO 일감처럼 새로 시작하지 않았어.`,
       }
     }
 
@@ -250,7 +320,7 @@ export async function setupProjectManagementService() {
       workItemId: workItem.id,
       actorType: 'airi',
       kind: 'status',
-      content: 'AIRI가 채팅 요청으로 이 일감 작업을 시작했어.',
+      content: 'Your Master가 이 일감 작업을 시작했어.',
     })
 
     activeRunWorkItemIds.add(started.id)
@@ -270,7 +340,9 @@ export async function setupProjectManagementService() {
       workItem: started,
       message: `${started.identifier} 작업을 시작했어. worktree 기반으로 워커 에이전트에게 맡겼어.`,
     }
-  })
+  }
+
+  defineInvokeHandler(context, projectManagementStartWorkItem, startWorkItem)
 
   defineInvokeHandler(context, projectManagementAddComment, async payload => store.addComment(payload))
 
@@ -278,5 +350,8 @@ export async function setupProjectManagementService() {
 
   defineInvokeHandler(context, projectManagementUpdateSettings, async payload => store.updateSettings(payload))
 
-  return store
+  return {
+    ...store,
+    startWorkItem,
+  }
 }

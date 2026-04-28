@@ -177,6 +177,39 @@ describe('project management store', () => {
     expect(updated.commitPrefix).toBeUndefined()
   })
 
+  it('replaces and de-duplicates settings lists instead of appending defaults on every save', () => {
+    const { store } = createTestStore()
+
+    const first = store.updateSettings({
+      shellDenylist: ['rm', 'del', 'git reset', 'git clean'],
+    })
+    const second = store.updateSettings({
+      shellDenylist: ['rm', 'del', 'git reset', 'git clean'],
+    })
+    const cleaned = store.updateSettings({
+      shellDenylist: ['rm', 'del', 'git reset', 'git clean', 'rm', ' del '],
+    })
+
+    expect(first.shellDenylist).toEqual(['rm', 'del', 'git reset', 'git clean'])
+    expect(second.shellDenylist).toEqual(['rm', 'del', 'git reset', 'git clean'])
+    expect(cleaned.shellDenylist).toEqual(['rm', 'del', 'git reset', 'git clean'])
+  })
+
+  it('keeps an intentionally cleared denylist empty after saving settings', () => {
+    const { store } = createTestStore()
+
+    const cleared = store.updateSettings({
+      shellDenylist: [],
+    })
+    const savedAgain = store.updateSettings({
+      shellDenylist: [],
+    })
+
+    expect(cleared.shellDenylist).toEqual([])
+    expect(savedAgain.shellDenylist).toEqual([])
+    expect(store.getSnapshot().settings.shellDenylist).toEqual([])
+  })
+
   it('deletes a work item with its comments and run records', () => {
     const { store } = createTestStore()
     const project = store.registerProject({

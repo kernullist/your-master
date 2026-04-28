@@ -1,4 +1,4 @@
-export type WorkItemRunStatus = 'queued' | 'in_progress' | 'in_review' | 'done' | 'blocked' | 'cancelled'
+export type WorkItemRunStatus = 'queued' | 'in_progress' | 'in_review' | 'done' | 'blocked'
 
 /**
  * Records one local worker/reviewer execution attempt for a work item.

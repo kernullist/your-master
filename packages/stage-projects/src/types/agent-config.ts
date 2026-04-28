@@ -1,14 +1,14 @@
-export type AgentModelProvider = 'lm-studio' | 'ollama' | 'openrouter'
+export type AgentModelProvider = 'lm-studio' | 'ollama' | 'openrouter' | 'codex-cli'
 
 /**
- * Model endpoint used by one AIRI agent role.
+ * Model runtime used by one project agent role.
  */
 export interface AgentModelConfig {
   /** Provider family used by this role. */
   provider: AgentModelProvider
   /** Provider model id. */
   model: string
-  /** Optional provider endpoint, usually needed for local providers. */
+  /** Optional provider endpoint, usually needed for OpenAI-compatible local providers. */
   baseUrl?: string
   /** Optional API key for remote providers such as OpenRouter. */
   apiKey?: string
@@ -20,8 +20,8 @@ export interface AgentModelConfig {
  * Global project orchestration settings.
  */
 export interface ProjectAgentSettings {
-  /** AIRI's conversation model. */
-  airi: AgentModelConfig
+  /** Project manager model that prepares worker/reviewer execution briefs. */
+  projectManager: AgentModelConfig
   /** Worker coding agent model. */
   worker: AgentModelConfig
   /** Reviewer agent model. */
@@ -46,10 +46,10 @@ export interface ProjectAgentSettings {
  * Default orchestration settings for new AIRI installations.
  */
 export const defaultProjectAgentSettings: ProjectAgentSettings = {
-  airi: {
+  projectManager: {
     provider: 'ollama',
     model: '',
-    systemPrompt: 'You are AIRI, the user-facing project manager AI.',
+    systemPrompt: 'You are AIRI Project Manager, an orchestration agent that turns work items into concise implementation briefs for worker and reviewer agents.',
   },
   worker: {
     provider: 'ollama',

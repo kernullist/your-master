@@ -5,12 +5,15 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
+  buildAgentRunWorktreeBranchName,
+  buildAgentRunWorktreePath,
   buildAgentWorktreeBranchName,
   buildAgentWorktreePath,
   buildWorkItemCommitMessage,
   commitAgentChangedFiles,
   createAgentWorktree,
   getGitChangedFiles,
+  integrateAgentBranchIntoProject,
   removeAgentWorktree,
   revertAgentChangedFiles,
   runGit,
@@ -58,6 +61,8 @@ describe('project runner git helpers', () => {
       expect(buildAgentWorktreeBranchName(workItem)).toBe('airi/work/airi-12')
       expect(buildAgentWorktreePath(root, workItem).replace(/\\/g, '/')).toContain('/.airi-worktrees/')
       expect(buildAgentWorktreePath(root, workItem).replace(/\\/g, '/')).toContain('/airi-12')
+      expect(buildAgentRunWorktreeBranchName(workItem, 'run-1')).toBe('airi/work/airi-12/run-1')
+      expect(buildAgentRunWorktreePath(root, workItem, 'run-1').replace(/\\/g, '/')).toContain('/airi-12/run-1')
     })
   }, 15000)
 
@@ -141,6 +146,71 @@ describe('project runner git helpers', () => {
       expect(result.exitCode).toBe(0)
       expect(agentFile.replace(/\r\n/g, '\n')).toBe('before\n')
       expect(userFile.replace(/\r\n/g, '\n')).toBe('user local change\n')
+    })
+  }, 15000)
+
+  it('preserves a conflicting agent branch when another completed branch was integrated first', async () => {
+    await withGitProject(async (root) => {
+      const firstWorktree = await createAgentWorktree({
+        projectRoot: root,
+        workItem: {
+          identifier: 'AIRI-12',
+        },
+        branchName: 'airi/work/airi-12/run-first',
+      })
+      const secondWorktree = await createAgentWorktree({
+        projectRoot: root,
+        workItem: {
+          identifier: 'AIRI-13',
+        },
+        branchName: 'airi/work/airi-13/run-second',
+      })
+
+      try {
+        await writeFile(join(firstWorktree.path, 'agent.txt'), 'after first agent\n')
+        await writeFile(join(secondWorktree.path, 'agent.txt'), 'after second agent\n')
+
+        const firstCommit = await commitAgentChangedFiles({
+          projectRoot: firstWorktree.path,
+          files: ['agent.txt'],
+          workItem: {
+            identifier: 'AIRI-12',
+            title: 'Update first agent text',
+          },
+        })
+        const secondCommit = await commitAgentChangedFiles({
+          projectRoot: secondWorktree.path,
+          files: ['agent.txt'],
+          workItem: {
+            identifier: 'AIRI-13',
+            title: 'Update second agent text',
+          },
+        })
+        const firstIntegration = await integrateAgentBranchIntoProject({
+          projectRoot: root,
+          branchName: firstWorktree.branchName,
+        })
+        const secondIntegration = await integrateAgentBranchIntoProject({
+          projectRoot: root,
+          branchName: secondWorktree.branchName,
+        })
+        const originalFile = await readFile(join(root, 'agent.txt'), 'utf-8')
+        const secondBranchFile = await runGit(root, ['show', `${secondWorktree.branchName}:agent.txt`])
+        const status = await runGit(root, ['status', '--porcelain'])
+
+        expect(firstCommit.committed).toBe(true)
+        expect(secondCommit.committed).toBe(true)
+        expect(firstIntegration.integrated).toBe(true)
+        expect(secondIntegration.integrated).toBe(false)
+        expect(secondIntegration.conflict).toBe(true)
+        expect(originalFile.replace(/\r\n/g, '\n')).toBe('after first agent\n')
+        expect(secondBranchFile.stdout.replace(/\r\n/g, '\n')).toBe('after second agent\n')
+        expect(status.stdout.trim()).toBe('')
+      }
+      finally {
+        await removeAgentWorktree(root, firstWorktree.path)
+        await removeAgentWorktree(root, secondWorktree.path)
+      }
     })
   }, 15000)
 })
