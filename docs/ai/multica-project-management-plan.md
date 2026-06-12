@@ -109,6 +109,9 @@
 - 자동 커밋은 일감별 worktree 브랜치에서 수행한다.
 - 자동 커밋 시 에이전트가 만든 변경 파일만 stage한다.
 - 원본 프로젝트 폴더의 다른 변경사항은 stage하지 않는다.
+- 여러 에이전트가 동시에 완료되면 원본 프로젝트별 통합 lock으로 completed branch를 하나씩 cherry-pick한다.
+- 동일 변경이 이미 반영되어 empty cherry-pick이 발생하면 충돌이 아니라 성공한 skipped integration으로 처리한다.
+- 원본 dirty 상태나 cherry-pick 충돌로 자동 통합하지 못하면 branch와 worktree를 보존하고 일감을 `blocked`로 표시한다.
 - 자동 revert는 원본 폴더를 건드리지 않고 일감 worktree를 정리하는 방식으로 처리한다.
 - 비-git 프로젝트에서는 commit/revert가 필요한 순간 AIRI가 사용자에게 알린다.
 
@@ -628,6 +631,8 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 - 설정에 따라 사용자 승인 후 커밋.
 - 커밋 실패 시 `done` 유지 + "커밋 실패" 코멘트 기록 + 미커밋 worktree 보존.
 - 자동 커밋이 꺼져 있으면 리뷰를 통과한 worktree를 삭제하지 않고 보존.
+- 자동 통합 충돌 시 `blocked` + branch/worktree 보존 + 수동 통합 코멘트 기록.
+- 이미 반영된 동일 patch는 empty cherry-pick을 충돌로 보지 않고 skipped success로 처리.
 
 산출물:
 
@@ -639,7 +644,7 @@ LLM에서 호출 가능한 내장 도구를 만든다.
 - 추가 파일:
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/git.ts`
   - `apps/stage-tamagotchi/src/main/services/airi/project-runner/git.test.ts`
-- 포함 내용: shell interpolation 없는 git 실행, 일감별 git worktree/branch 생성과 조건부 제거, 에이전트 변경 파일만 stage, 일감 번호 포함 conventional commit message 생성, short hash 반환, commit 실패 결과 객체, 미커밋 변경 보존, 에이전트 변경 파일만 `git restore` revert, diff stat 요약.
+- 포함 내용: shell interpolation 없는 git 실행, 일감별 git worktree/branch 생성과 조건부 제거, 에이전트 변경 파일만 stage, 일감 번호 포함 conventional commit message 생성, short hash 반환, commit 실패 결과 객체, 미커밋 변경 보존, 원본 프로젝트별 직렬 cherry-pick 통합, empty cherry-pick 성공 처리, 통합 충돌 시 blocked 처리와 worktree 보존, 에이전트 변경 파일만 `git restore` revert, diff stat 요약.
 - 검증:
   - `pnpm -F @proj-airi/stage-tamagotchi exec vitest run src/main/services/airi/project-runner/git.test.ts`
   - `pnpm -F @proj-airi/stage-tamagotchi typecheck`

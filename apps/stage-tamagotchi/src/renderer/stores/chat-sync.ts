@@ -1,9 +1,11 @@
 import type { WebSocketEventInputs } from '@proj-airi/server-sdk'
+import type { WorkItem, WorkItemStatus } from '@proj-airi/stage-projects'
 import type { ChatHistoryItem, StreamingAssistantMessage } from '@proj-airi/stage-ui/types/chat'
 import type { ChatSessionMeta } from '@proj-airi/stage-ui/types/chat-session'
 import type { ChatProvider } from '@xsai-ext/providers/utils'
 
 import { errorMessageFrom } from '@moeru/std'
+import { getElectronEventaContext } from '@proj-airi/electron-vueuse'
 import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
 import { useChatMaintenanceStore } from '@proj-airi/stage-ui/stores/chat/maintenance'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
@@ -13,6 +15,7 @@ import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
+import { projectManagementWorkItemStatusChanged } from '../../shared/eventa'
 import { imageJournalTools } from './tools/builtin/image-journal'
 import { executeProjectManagementAction, projectManagementTools } from './tools/builtin/project-management'
 import { weatherTools } from './tools/builtin/weather'
@@ -51,6 +54,13 @@ interface RetryCommandPayload {
   index: number
 }
 
+interface IngestAcceptanceSnapshot {
+  sessionId: string
+  messageStartIndex: number
+  text: string
+  hasAttachments: boolean
+}
+
 type ChatSyncMessage
   = | { type: 'authority-announcement', authorityId: string, sentAt: number }
     | { type: 'request-snapshot', requestId: string, senderId: string }
@@ -60,7 +70,7 @@ type ChatSyncMessage
     | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'retry', payload: RetryCommandPayload }
     | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'cleanup', payload: { sessionId?: string } }
     | { type: 'command', authorityId?: string, requestId: string, senderId: string, command: 'delete-message', payload: { sessionId?: string, messageId?: string, index?: number } }
-    | { type: 'response', requestId: string, authorityId: string, ok: boolean, error?: string }
+    | { type: 'response', requestId: string, authorityId: string, ok: boolean, error?: string, ingestAccepted?: boolean }
 
 interface PendingRequest {
   resolve: () => void
@@ -71,12 +81,72 @@ interface PendingRequest {
 const CHAT_SYNC_CHANNEL_NAME = 'airi:stage-tamagotchi:chat-sync'
 const AUTHORITY_HEARTBEAT_INTERVAL_MS = 1000
 const REQUEST_TIMEOUT_MS = 30000
+const PROJECT_WORK_ITEM_IDENTIFIER_REGEX = /(?:^|[^A-Z0-9])([A-Z][A-Z0-9]*-\d+)(?=$|[^A-Z0-9])/i
+const PROJECT_WORK_ITEM_NOTIFICATION_STATUSES = ['done', 'blocked'] as const
+
+type ProjectWorkItemNotificationStatus = (typeof PROJECT_WORK_ITEM_NOTIFICATION_STATUSES)[number]
 
 export function formatChatCommandFailureMessage(message: string): string {
   const trimmed = message.trim()
   return trimmed
     ? `요청을 처리하지 못했어.\n원인: ${trimmed}`
     : '요청을 처리하지 못했어.'
+}
+
+/**
+ * Checks whether a project work item status should create a chat notification.
+ *
+ * Use when:
+ * - Project-management status events should be surfaced in chat
+ * - Non-terminal runner state changes should stay quiet
+ *
+ * Expects:
+ * - `status` is already validated by the project-management schema
+ *
+ * Returns:
+ * - True for terminal user-visible states that need attention
+ */
+export function isProjectWorkItemNotificationStatus(status: WorkItemStatus): status is ProjectWorkItemNotificationStatus {
+  return PROJECT_WORK_ITEM_NOTIFICATION_STATUSES.includes(status as ProjectWorkItemNotificationStatus)
+}
+
+/**
+ * Formats a project work item status notification for chat.
+ *
+ * Use when:
+ * - A work item has just moved to done or blocked
+ * - AIRI should notify the active chat session without asking the model
+ *
+ * Expects:
+ * - `previousStatus` is the status before the persisted update
+ * - `workItem.status` is the newly persisted status
+ *
+ * Returns:
+ * - A chat-ready Korean message, or null when no notification is needed
+ */
+export function formatProjectWorkItemStatusNotification(input: {
+  workItem: Pick<WorkItem, 'identifier' | 'status' | 'title'>
+  previousStatus: WorkItemStatus
+}): string | null {
+  if (input.previousStatus === input.workItem.status)
+    return null
+
+  if (!isProjectWorkItemNotificationStatus(input.workItem.status))
+    return null
+
+  if (input.workItem.status === 'done') {
+    return [
+      `${input.workItem.identifier} 일감이 완료됐어.`,
+      `제목: ${input.workItem.title}`,
+      '상태를 done으로 바꿔뒀어. 필요하면 프로젝트 보드에서 변경사항과 실행 메모를 확인해줘.',
+    ].join('\n')
+  }
+
+  return [
+    `${input.workItem.identifier} 일감이 블락됐어.`,
+    `제목: ${input.workItem.title}`,
+    '상태를 blocked로 바꿔뒀어. 프로젝트 보드의 최근 메모에서 막힌 원인을 확인해줘.',
+  ].join('\n')
 }
 
 function createRequestId() {
@@ -182,6 +252,111 @@ export function isTodoWorkItemListRequest(text: string): boolean {
 }
 
 /**
+ * Extracts a project work item identifier from free-form chat text.
+ *
+ * Before:
+ * - "AIRI-12 상태 알려줘"
+ *
+ * After:
+ * - "AIRI-12"
+ */
+export function extractProjectWorkItemIdentifier(text: string): string | null {
+  return PROJECT_WORK_ITEM_IDENTIFIER_REGEX.exec(text.trim())?.[1]?.toUpperCase() ?? null
+}
+
+/**
+ * Resolves the board status a project progress question is focused on.
+ *
+ * Use when:
+ * - A chat question asks for blocked, review, done, in-progress, or TODO work
+ * - The progress summary should emphasize one board column
+ *
+ * Expects:
+ * - The text is the raw user chat message
+ *
+ * Returns:
+ * - A work-item status when one can be inferred, otherwise undefined
+ */
+export function resolveProjectProgressStatus(text: string): WorkItemStatus | undefined {
+  const normalized = text.trim().toLowerCase()
+
+  if (['막힌', '막혀', 'blocked', 'blocker', 'blockers'].some(keyword => normalized.includes(keyword)))
+    return 'blocked'
+  if (['리뷰', '검토', 'review'].some(keyword => normalized.includes(keyword)))
+    return 'in_review'
+  if (['완료', '끝난', '끝낸', 'done', 'completed', 'finished'].some(keyword => normalized.includes(keyword)))
+    return 'done'
+  if (['진행 중', '진행중', '작업 중', '작업중', 'in progress', 'working'].some(keyword => normalized.includes(keyword)))
+    return 'in_progress'
+  if (['todo', 'to-do', '할 일', '해야 할'].some(keyword => normalized.includes(keyword)))
+    return 'todo'
+
+  return undefined
+}
+
+/**
+ * Detects project progress/status questions without catching start commands.
+ *
+ * Use when:
+ * - Chat text should bypass weak tool-calling models for project status summaries
+ * - Specific work item status questions like `AIRI-12 상태 알려줘` need local data
+ *
+ * Expects:
+ * - The text is the raw user chat message
+ *
+ * Returns:
+ * - True only for read-only status/progress requests
+ */
+export function isProjectProgressRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized)
+    return false
+
+  const hasIdentifier = extractProjectWorkItemIdentifier(normalized) != null
+  const includesProjectSubject = [
+    '프로젝트',
+    '일감',
+    '작업',
+    'issue',
+    'task',
+    'work item',
+    'project',
+  ].some(keyword => normalized.includes(keyword))
+  const hasProjectProgressScope = hasIdentifier || includesProjectSubject
+  const includesExplicitProgressKeyword = [
+    '진행상황',
+    '진행 상황',
+    '진척',
+    '현황',
+    '어디까지',
+    '몇 퍼센트',
+    '몇%',
+    '퍼센트',
+    'progress',
+  ].some(keyword => normalized.includes(keyword))
+  const includesStatusKeyword = ['상태', 'status', 'how is', 'how are']
+    .some(keyword => normalized.includes(keyword))
+  const includesConversationalProgress = /진행.*(?:알려|보여|어때|[됐되중])/.test(normalized)
+    || /(?:어떻게|잘).*(?:되고|돼|되어|going)/.test(normalized)
+
+  return includesExplicitProgressKeyword
+    || Boolean(hasProjectProgressScope && (
+      includesStatusKeyword
+      || includesConversationalProgress
+      || resolveProjectProgressStatus(normalized)
+    ))
+}
+
+function hasExplicitProjectWorkItemStartIntent(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  return [
+    /(?:진행|시작|처리|작업|구현)\s*(?:해(?:\s?줘|주세요|라)?|하자|시켜)/,
+    /계속\s*진행/,
+    /\b(start|work on|proceed|run|implement)\b/,
+  ].some(pattern => pattern.test(normalized))
+}
+
+/**
  * Extracts a work item identifier from a direct start request.
  *
  * Before:
@@ -195,25 +370,14 @@ export function extractProjectWorkItemStartIdentifier(text: string): string | nu
   if (!normalized)
     return null
 
-  const identifier = /(?:^|[^A-Z0-9])([A-Z][A-Z0-9]*-\d+)(?=$|[^A-Z0-9])/i.exec(normalized)?.[1]?.toUpperCase()
+  const identifier = extractProjectWorkItemIdentifier(normalized)
   if (!identifier)
     return null
 
-  const lower = normalized.toLowerCase()
-  const includesStartKeyword = [
-    '진행',
-    '시작',
-    '처리',
-    '작업',
-    '구현',
-    '해줘',
-    'start',
-    'work on',
-    'proceed',
-    'run',
-  ].some(keyword => lower.includes(keyword))
+  if (isProjectProgressRequest(normalized))
+    return null
 
-  return includesStartKeyword ? identifier : null
+  return hasExplicitProjectWorkItemStartIntent(normalized) ? identifier : null
 }
 
 export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => {
@@ -292,6 +456,44 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
   }
 
+  function appendAssistantMessage(sessionId: string, content: string) {
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'assistant',
+      content,
+      slices: [{ type: 'text', text: content }],
+      tool_results: [],
+      createdAt: Date.now(),
+    })
+  }
+
+  function appendProjectWorkItemStatusNotification(payload: { workItem: WorkItem, previousStatus: WorkItemStatus }) {
+    const content = formatProjectWorkItemStatusNotification(payload)
+    if (!content)
+      return
+
+    const sessionId = activeSessionId.value
+    if (!sessionId)
+      return
+
+    appendAssistantMessage(sessionId, content)
+  }
+
+  function registerProjectWorkItemStatusNotificationListener() {
+    try {
+      const context = getElectronEventaContext()
+      const stop = context.on(projectManagementWorkItemStatusChanged, (event) => {
+        if (!event.body)
+          return
+
+        appendProjectWorkItemStatusNotification(event.body)
+      })
+      stopSyncWatchers.push(stop)
+    }
+    catch (error) {
+      console.warn('[chat-sync] Failed to subscribe to project work item status notifications:', errorMessageFrom(error) ?? 'unknown error')
+    }
+  }
+
   function clearHeartbeat() {
     if (heartbeatTimer) {
       clearInterval(heartbeatTimer)
@@ -300,6 +502,8 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   }
 
   function registerAuthorityWatchers() {
+    registerProjectWorkItemStatusNotificationListener()
+
     stopSyncWatchers.push(
       watch([activeSessionId, sessionMessages, sessionMetas], () => {
         broadcastSessionSnapshot()
@@ -360,6 +564,31 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
 
     return projectManagementTools
+  }
+
+  function createIngestAcceptanceSnapshot(payload: IngestCommandPayload): IngestAcceptanceSnapshot {
+    const sessionId = payload.sessionId || chatSession.activeSessionId
+
+    return {
+      sessionId,
+      messageStartIndex: chatSession.getSessionMessages(sessionId).length,
+      text: payload.text.trim(),
+      hasAttachments: !!payload.attachments?.length,
+    }
+  }
+
+  function hasAcceptedIngestPayload(snapshot: IngestAcceptanceSnapshot): boolean {
+    return chatSession.getSessionMessages(snapshot.sessionId)
+      .slice(snapshot.messageStartIndex)
+      .some((message) => {
+        if (message.role !== 'user')
+          return false
+
+        if (snapshot.hasAttachments && Array.isArray(message.content))
+          return true
+
+        return getRetryText(message) === snapshot.text
+      })
   }
 
   async function executeIngest(payload: IngestCommandPayload) {
@@ -480,6 +709,31 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     return true
   }
 
+  async function executeLocalProjectProgressRequest(payload: IngestCommandPayload): Promise<boolean> {
+    if (!isProjectProgressRequest(payload.text))
+      return false
+
+    const sessionId = payload.sessionId || chatSession.activeSessionId
+    const content = await executeProjectManagementAction({
+      action: 'summarize_progress',
+      identifier: extractProjectWorkItemIdentifier(payload.text),
+      status: resolveProjectProgressStatus(payload.text),
+    })
+
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'user',
+      content: payload.text,
+    })
+    chatSession.appendSessionMessage(sessionId, {
+      role: 'assistant',
+      content,
+      slices: [{ type: 'text', text: content }],
+      tool_results: [],
+    })
+
+    return true
+  }
+
   async function executeLocalProjectWorkItemStartRequest(payload: IngestCommandPayload): Promise<boolean> {
     const identifier = extractProjectWorkItemStartIdentifier(payload.text)
     if (!identifier)
@@ -509,21 +763,25 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     if (mode.value !== 'authority')
       return
 
-    const respond = (ok: boolean, error?: string) => {
+    const respond = (ok: boolean, error?: string, options?: { ingestAccepted?: boolean }) => {
       post({
         type: 'response',
         requestId: message.requestId,
         authorityId: instanceId,
         ok,
         error,
+        ...options,
       })
     }
 
+    let ingestAcceptanceSnapshot: IngestAcceptanceSnapshot | undefined
     try {
       switch (message.command) {
         case 'ingest':
+          ingestAcceptanceSnapshot = createIngestAcceptanceSnapshot(message.payload)
           if (
             !await executeLocalTodoWorkItemListRequest(message.payload)
+            && !await executeLocalProjectProgressRequest(message.payload)
             && !await executeLocalProjectWorkItemStartRequest(message.payload)
             && !await executeLocalProjectBoardRequest(message.payload)
           ) {
@@ -545,11 +803,14 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     }
     catch (error) {
       const errorMessage = errorMessageFrom(error) ?? 'Unknown chat sync command failure'
+      const ingestAccepted = message.command === 'ingest'
+        && ingestAcceptanceSnapshot != null
+        && hasAcceptedIngestPayload(ingestAcceptanceSnapshot)
 
       if (message.command === 'ingest')
         appendIngestErrorMessage(message.payload, errorMessage)
 
-      respond(false, errorMessage)
+      respond(false, errorMessage, ingestAccepted ? { ingestAccepted } : undefined)
     }
   }
 
@@ -561,7 +822,7 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     clearTimeout(pending.timeout)
     pendingRequests.delete(message.requestId)
 
-    if (message.ok) {
+    if (message.ok || message.ingestAccepted) {
       pending.resolve()
       return
     }
@@ -662,16 +923,31 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
 
   async function requestIngest(payload: IngestCommandPayload) {
     if (mode.value === 'authority') {
-      if (await executeLocalTodoWorkItemListRequest(payload))
-        return
+      const ingestAcceptanceSnapshot = createIngestAcceptanceSnapshot(payload)
 
-      if (await executeLocalProjectWorkItemStartRequest(payload))
-        return
+      try {
+        if (await executeLocalTodoWorkItemListRequest(payload))
+          return
 
-      if (await executeLocalProjectBoardRequest(payload))
-        return
+        if (await executeLocalProjectProgressRequest(payload))
+          return
 
-      await executeIngest(payload)
+        if (await executeLocalProjectWorkItemStartRequest(payload))
+          return
+
+        if (await executeLocalProjectBoardRequest(payload))
+          return
+
+        await executeIngest(payload)
+      }
+      catch (error) {
+        if (hasAcceptedIngestPayload(ingestAcceptanceSnapshot)) {
+          appendIngestErrorMessage(payload, errorMessageFrom(error) ?? 'Unknown chat sync command failure')
+          return
+        }
+
+        throw error
+      }
       return
     }
 

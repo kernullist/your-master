@@ -39,6 +39,8 @@ export interface AgentIntegrationResult {
   integrated: boolean
   /** True when git reported a content conflict and AIRI aborted the cherry-pick. */
   conflict: boolean
+  /** True when the agent commit patch was already present and no new commit was needed. */
+  skipped?: boolean
   /** Commit hash currently checked out in the original project after integration. */
   hash?: string
   /** Failure summary shown to the board when integration is unsafe or conflicted. */
@@ -134,6 +136,12 @@ function normalizeAgentChangedFiles(projectRoot: string, files: string[]): strin
 
 function trimGitOutput(result: GitCommandResult): string {
   return (result.stderr || result.stdout).trim()
+}
+
+function isEmptyCherryPickOutput(output: string): boolean {
+  return output.includes('The previous cherry-pick is now empty')
+    || output.includes('nothing to commit, working tree clean')
+    || output.includes('nothing to commit')
 }
 
 /**
@@ -492,11 +500,24 @@ export async function integrateAgentBranchIntoProject(params: {
 
     const cherryPick = await runGit(params.projectRoot, ['cherry-pick', params.branchName])
     if (cherryPick.exitCode !== 0) {
+      const output = trimGitOutput(cherryPick)
+      if (isEmptyCherryPickOutput(output)) {
+        await runGit(params.projectRoot, ['cherry-pick', '--abort'])
+        const hash = await runGit(params.projectRoot, ['rev-parse', '--short', 'HEAD'])
+        return {
+          integrated: true,
+          conflict: false,
+          skipped: true,
+          hash: hash.stdout.trim() || undefined,
+          error: 'Agent branch changes were already present in the original project.',
+        }
+      }
+
       await runGit(params.projectRoot, ['cherry-pick', '--abort'])
       return {
         integrated: false,
         conflict: true,
-        error: trimGitOutput(cherryPick) || 'git cherry-pick failed while integrating the agent branch.',
+        error: output || 'git cherry-pick failed while integrating the agent branch.',
       }
     }
 

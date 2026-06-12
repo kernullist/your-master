@@ -30,6 +30,8 @@ describe('project board server', () => {
     expect(html).toContain('Worktree · ')
     expect(html).toContain('selectedProjectMetrics')
     expect(html).toContain('statusLabels')
+    expect(html).toContain('lifecycleLabels')
+    expect(html).toContain('Verifier commands')
     expect(html).toContain('escapeHtml(item.goal)')
     expect(html).toContain('escapeHtml(comment.content)')
     expect(html).toContain('id="projects"')
@@ -68,6 +70,7 @@ describe('project board server', () => {
             maxReviewRetries: 5,
             maxConcurrentRuns: 2,
             autoCommit: true,
+            verifierCommands: [],
             shellDenylist: ['rm'],
             shellAllowlist: [],
             forbiddenPathPatterns: [],
@@ -129,6 +132,7 @@ describe('project board server', () => {
             maxReviewRetries: 5,
             maxConcurrentRuns: 2,
             autoCommit: true,
+            verifierCommands: [],
             shellDenylist: ['rm'],
             shellAllowlist: [],
             forbiddenPathPatterns: [],

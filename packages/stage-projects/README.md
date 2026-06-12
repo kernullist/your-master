@@ -37,6 +37,10 @@ Project-management automation uses three roles:
 
 The Project Manager model is separate from the main chat consciousness model. Main chat still uses the `settings/consciousness/*` selection; project automation uses the project-management settings here.
 
+Run records now keep the small orchestration artifact that makes chat and board progress answers useful: lifecycle phase, worktree state, project-manager plan summary, plan steps, risk notes, review focus, verifier commands, and latest subtask progress. Status fields still drive the board columns; lifecycle fields explain what the runner is doing inside that column.
+
+Verifier commands are optional project-management settings. When configured, AIRI prioritizes them before model-suggested checks and inferred package scripts, so teams can define a stable "definition of done" without relying on every Worker prompt to rediscover it.
+
 Supported project-management providers:
 
 - LM Studio, Ollama, and OpenRouter through OpenAI-compatible chat completions.
@@ -46,7 +50,9 @@ Supported project-management providers:
 
 Git-backed work items run in isolated git worktrees. Each runner invocation receives a unique `airi/work/<identifier>/<run-id>` branch and matching `.airi-worktrees/<project>/<identifier>/<run-id>` checkout. This avoids branch resets and folder reuse when retries or parallel agents finish close together.
 
-When auto-commit is enabled, the worker commits in its isolated branch first. AIRI then serializes integration per original project and cherry-picks one completed agent branch at a time. If the original worktree is dirty or git reports a conflict, AIRI aborts the cherry-pick, leaves the agent branch intact, and records a board comment for manual review.
+When auto-commit is enabled, the worker commits in its isolated branch first. AIRI then serializes integration per original project and cherry-picks one completed agent branch at a time. If the original worktree is dirty or git reports a conflict, AIRI aborts the cherry-pick, leaves the agent branch and worktree intact, marks the work item blocked, and records a board comment for manual review.
+
+If another agent has already applied the same patch, Git can report an empty cherry-pick. AIRI treats that as a successful skipped integration instead of a conflict, aborts the empty cherry-pick state, and leaves the original worktree clean.
 
 When auto-commit is disabled, or when a reviewed change cannot be committed, AIRI preserves the agent worktree instead of deleting it. This keeps accepted but uncommitted edits inspectable from the board's worktree path.
 

@@ -97,11 +97,11 @@ function toSnapshot(state: ProjectManagementState): ProjectManagementSnapshot {
  * After:
  * - `["rm", "del"]`
  */
-function normalizeUniqueStringList(items: string[] | undefined, fallback: string[]): string[] {
+function normalizeUniqueStringList(items: string[] | undefined, fallback?: string[]): string[] {
   const seen = new Set<string>()
   const result: string[] = []
 
-  for (const item of items ?? fallback) {
+  for (const item of items ?? fallback ?? []) {
     const normalized = item.trim()
     if (!normalized || seen.has(normalized))
       continue
@@ -145,6 +145,7 @@ export function mergeProjectAgentSettings(
       ...current.reviewer,
       ...patch.reviewer,
     },
+    verifierCommands: normalizeUniqueStringList(patch.verifierCommands, current.verifierCommands),
     shellDenylist: normalizeUniqueStringList(patch.shellDenylist, current.shellDenylist),
     shellAllowlist: normalizeUniqueStringList(patch.shellAllowlist, current.shellAllowlist),
     forbiddenPathPatterns: normalizeUniqueStringList(patch.forbiddenPathPatterns, current.forbiddenPathPatterns),

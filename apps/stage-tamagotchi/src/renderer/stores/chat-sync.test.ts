@@ -74,9 +74,29 @@ interface MockState {
 }
 
 let mockState: MockState
+const mockElectronEventa = vi.hoisted(() => {
+  const eventHandlers = new Set<(event: { body?: unknown }) => void>()
+  const getElectronEventaContext = vi.fn(() => ({
+    on: vi.fn((_event: unknown, handler: (event: { body?: unknown }) => void) => {
+      eventHandlers.add(handler)
+      return () => {
+        eventHandlers.delete(handler)
+      }
+    }),
+  }))
+
+  return {
+    eventHandlers,
+    getElectronEventaContext,
+  }
+})
 const mockProjectManagement = vi.hoisted(() => ({
   executeProjectManagementAction: vi.fn(async () => 'Opened project board in external browser.'),
   projectManagementTools: vi.fn(async () => []),
+}))
+
+vi.mock('@proj-airi/electron-vueuse', () => ({
+  getElectronEventaContext: mockElectronEventa.getElectronEventaContext,
 }))
 
 vi.mock('@proj-airi/stage-ui/stores/chat/session-store', () => ({
@@ -148,7 +168,15 @@ vi.mock('./tools/builtin/project-management', () => ({
  * })
  */
 describe('useChatSyncStore authority ingest failures', async () => {
-  const { extractProjectWorkItemStartIdentifier, formatChatCommandFailureMessage, isTodoWorkItemListRequest, useChatSyncStore } = await import('./chat-sync')
+  const {
+    extractProjectWorkItemStartIdentifier,
+    formatChatCommandFailureMessage,
+    isProjectProgressRequest,
+    formatProjectWorkItemStatusNotification,
+    isTodoWorkItemListRequest,
+    resolveProjectProgressStatus,
+    useChatSyncStore,
+  } = await import('./chat-sync')
 
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -198,6 +226,8 @@ describe('useChatSyncStore authority ingest failures', async () => {
 
     mockProjectManagement.executeProjectManagementAction.mockReset()
     mockProjectManagement.executeProjectManagementAction.mockResolvedValue('Opened project board in external browser.')
+    mockElectronEventa.eventHandlers.clear()
+    mockElectronEventa.getElectronEventaContext.mockClear()
     vi.stubGlobal('BroadcastChannel', MockBroadcastChannel)
   })
 
@@ -246,12 +276,220 @@ describe('useChatSyncStore authority ingest failures', async () => {
 
   /**
    * @example
+   * it('resolves authority ingest failures after the user turn is accepted', async () => {
+   *   // accepted user turns should stay in history
+   *   // the input draft should not be restored by callers
+   * })
+   */
+  it('resolves authority ingest failures after the user turn is accepted', async () => {
+    mockState.ingest.mockImplementationOnce(async (text: string, _options: unknown, sessionId?: string) => {
+      const targetSessionId = sessionId ?? mockState.activeSessionId.value
+      mockState.sessionMessages.value[targetSessionId] = [
+        ...(mockState.sessionMessages.value[targetSessionId] ?? []),
+        {
+          role: 'user',
+          content: text,
+        },
+      ]
+      throw new Error('stream interrupted')
+    })
+
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await expect(store.requestIngest({
+      text: 'hello',
+      sessionId: 'session-1',
+    })).resolves.toBeUndefined()
+
+    expect(mockState.setSessionMessages).toHaveBeenCalledWith('session-1', [
+      { role: 'system', content: 'init' },
+      { role: 'user', content: 'hello' },
+      {
+        role: 'error',
+        content: '요청을 처리하지 못했어.\n원인: stream interrupted',
+      },
+    ])
+
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('resolves follower ingest requests when the authority accepted the user turn', async () => {
+   *   // follower input should stay cleared
+   *   // authority still records the failure in chat history
+   * })
+   */
+  it('resolves follower ingest requests when the authority accepted the user turn', async () => {
+    mockState.ingest.mockImplementationOnce(async (text: string, _options: unknown, sessionId?: string) => {
+      const targetSessionId = sessionId ?? mockState.activeSessionId.value
+      mockState.sessionMessages.value[targetSessionId] = [
+        ...(mockState.sessionMessages.value[targetSessionId] ?? []),
+        {
+          role: 'user',
+          content: text,
+        },
+      ]
+      throw new Error('stream interrupted')
+    })
+
+    setActivePinia(createPinia())
+    const authorityStore = useChatSyncStore()
+    authorityStore.initialize('authority')
+
+    setActivePinia(createPinia())
+    const followerStore = useChatSyncStore()
+    followerStore.initialize('follower')
+
+    await expect(followerStore.requestIngest({
+      text: 'hello',
+      sessionId: 'session-1',
+    })).resolves.toBeUndefined()
+
+    expect(mockState.setSessionMessages).toHaveBeenCalledWith('session-1', [
+      { role: 'system', content: 'init' },
+      { role: 'user', content: 'hello' },
+      {
+        role: 'error',
+        content: '요청을 처리하지 못했어.\n원인: stream interrupted',
+      },
+    ])
+
+    followerStore.dispose()
+    authorityStore.dispose()
+  })
+
+  /**
+   * @example
    * it('formats tool and model failures for users', () => {
    *   // raw tool/model errors should not appear as context-free failures
    * })
    */
   it('formats command failures for user-visible chat errors', () => {
     expect(formatChatCommandFailureMessage('Tool "stage_project_management" execution failed.')).toBe('요청을 처리하지 못했어.\n원인: Tool "stage_project_management" execution failed.')
+  })
+
+  /**
+   * @example
+   * it('formats terminal project work item status notifications for chat', () => {
+   *   // done and blocked status changes should become assistant messages
+   * })
+   */
+  it('formats terminal project work item status notifications for chat', () => {
+    expect(formatProjectWorkItemStatusNotification({
+      previousStatus: 'in_review',
+      workItem: {
+        identifier: 'AIRI-12',
+        status: 'done',
+        title: 'Add project board',
+      },
+    })).toContain('AIRI-12 일감이 완료됐어.')
+
+    expect(formatProjectWorkItemStatusNotification({
+      previousStatus: 'in_progress',
+      workItem: {
+        identifier: 'AIRI-13',
+        status: 'blocked',
+        title: 'Wire runner',
+      },
+    })).toContain('AIRI-13 일감이 블락됐어.')
+
+    expect(formatProjectWorkItemStatusNotification({
+      previousStatus: 'todo',
+      workItem: {
+        identifier: 'AIRI-14',
+        status: 'in_progress',
+        title: 'Start work',
+      },
+    })).toBeNull()
+  })
+
+  /**
+   * @example
+   * it('appends a chat notification when a project work item reaches done or blocked', async () => {
+   *   // project-management status events should reach the active chat session
+   * })
+   */
+  it('appends chat notifications for done and blocked project work items', async () => {
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    const [handler] = [...mockElectronEventa.eventHandlers]
+    expect(handler).toBeDefined()
+
+    handler?.({
+      body: {
+        previousStatus: 'in_review',
+        workItem: {
+          identifier: 'AIRI-12',
+          status: 'done',
+          title: 'Add project board',
+        },
+      },
+    })
+
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: expect.stringContaining('AIRI-12 일감이 완료됐어.'),
+      slices: [{
+        type: 'text',
+        text: expect.stringContaining('AIRI-12 일감이 완료됐어.'),
+      }],
+      tool_results: [],
+      createdAt: expect.any(Number),
+    })
+
+    handler?.({
+      body: {
+        previousStatus: 'in_progress',
+        workItem: {
+          identifier: 'AIRI-13',
+          status: 'blocked',
+          title: 'Wire runner',
+        },
+      },
+    })
+
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: expect.stringContaining('AIRI-13 일감이 블락됐어.'),
+      slices: [{
+        type: 'text',
+        text: expect.stringContaining('AIRI-13 일감이 블락됐어.'),
+      }],
+      tool_results: [],
+      createdAt: expect.any(Number),
+    })
+
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('does not notify chat for non-terminal project status changes', () => {
+   *   // in_progress and in_review are too noisy for chat notifications
+   * })
+   */
+  it('does not notify chat for non-terminal project status changes', () => {
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    const [handler] = [...mockElectronEventa.eventHandlers]
+    handler?.({
+      body: {
+        previousStatus: 'todo',
+        workItem: {
+          identifier: 'AIRI-12',
+          status: 'in_progress',
+          title: 'Add project board',
+        },
+      },
+    })
+
+    expect(mockState.appendSessionMessage).not.toHaveBeenCalled()
+
+    store.dispose()
   })
 
   /**
@@ -307,6 +545,98 @@ describe('useChatSyncStore authority ingest failures', async () => {
     expect(isTodoWorkItemListRequest('현재 todo 일감들을 알려줘')).toBe(true)
     expect(isTodoWorkItemListRequest('TODO 작업 목록 보여줘')).toBe(true)
     expect(isTodoWorkItemListRequest('AIRI-12 상태 알려줘')).toBe(false)
+  })
+
+  /**
+   * @example
+   * it('detects progress questions without treating starts as status requests', () => {
+   *   // "AIRI-12 진행상황 알려줘" is read-only
+   *   // "AIRI-12 진행해줘" starts work
+   * })
+   */
+  it('detects project progress questions without catching start commands', () => {
+    expect(isProjectProgressRequest('프로젝트 진행상황 알려줘')).toBe(true)
+    expect(isProjectProgressRequest('현재 작업 현황 보여줘')).toBe(true)
+    expect(isProjectProgressRequest('AIRI-12 상태 알려줘')).toBe(true)
+    expect(isProjectProgressRequest('리뷰 중인 작업 뭐야?')).toBe(true)
+    expect(isProjectProgressRequest('막힌 일감 있어?')).toBe(true)
+    expect(isProjectProgressRequest('AIRI-12 진행해줘')).toBe(false)
+    expect(isProjectProgressRequest('네 상태 어때?')).toBe(false)
+    expect(extractProjectWorkItemStartIdentifier('AIRI-12 진행상황 알려줘')).toBeNull()
+    expect(extractProjectWorkItemStartIdentifier('AIRI-12 진행해줘')).toBe('AIRI-12')
+  })
+
+  /**
+   * @example
+   * it('resolves progress status filters from user wording', () => {
+   *   // blocked/review/done wording should focus the summary
+   * })
+   */
+  it('resolves project progress status filters from user wording', () => {
+    expect(resolveProjectProgressStatus('막힌 일감 있어?')).toBe('blocked')
+    expect(resolveProjectProgressStatus('리뷰 중인 작업 뭐야?')).toBe('in_review')
+    expect(resolveProjectProgressStatus('완료된 작업 알려줘')).toBe('done')
+    expect(resolveProjectProgressStatus('진행 중인 작업 알려줘')).toBe('in_progress')
+    expect(resolveProjectProgressStatus('todo 작업 목록')).toBe('todo')
+  })
+
+  /**
+   * @example
+   * it('answers project progress through the local project-management shortcut', async () => {
+   *   // clear progress questions should not rely on weak model tool calling
+   * })
+   */
+  it('answers project progress through the local project-management shortcut', async () => {
+    mockProjectManagement.executeProjectManagementAction.mockResolvedValueOnce('demo 진행상황: 1/3 완료')
+
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestIngest({
+      text: 'AIRI-12 상태 알려줘',
+      sessionId: 'session-1',
+    })
+
+    expect(mockState.ingest).not.toHaveBeenCalled()
+    expect(mockProjectManagement.executeProjectManagementAction).toHaveBeenCalledWith({
+      action: 'summarize_progress',
+      identifier: 'AIRI-12',
+      status: undefined,
+    })
+    expect(mockState.appendSessionMessage).toHaveBeenCalledWith('session-1', {
+      role: 'assistant',
+      content: 'demo 진행상황: 1/3 완료',
+      slices: [{ type: 'text', text: 'demo 진행상황: 1/3 완료' }],
+      tool_results: [],
+    })
+
+    store.dispose()
+  })
+
+  /**
+   * @example
+   * it('focuses blocked progress questions on blocked items', async () => {
+   *   // "막힌 일감" should pass status=blocked into summarize_progress
+   * })
+   */
+  it('focuses blocked progress questions on blocked items', async () => {
+    mockProjectManagement.executeProjectManagementAction.mockResolvedValueOnce('막힘 일감: 1개')
+
+    const store = useChatSyncStore()
+    store.initialize('authority')
+
+    await store.requestIngest({
+      text: '막힌 일감 있어?',
+      sessionId: 'session-1',
+    })
+
+    expect(mockProjectManagement.executeProjectManagementAction).toHaveBeenCalledWith({
+      action: 'summarize_progress',
+      identifier: null,
+      status: 'blocked',
+    })
+
+    store.dispose()
   })
 
   /**

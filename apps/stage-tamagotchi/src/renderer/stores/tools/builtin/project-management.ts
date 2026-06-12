@@ -11,7 +11,7 @@ import type {
 
 import { defineInvoke } from '@moeru/eventa'
 import { createContext } from '@moeru/eventa/adapters/electron/renderer'
-import { createNextWorkItemIdentifier } from '@proj-airi/stage-projects'
+import { createNextWorkItemIdentifier, WORK_ITEM_STATUSES } from '@proj-airi/stage-projects'
 import { rawTool } from '@xsai/tool'
 
 import {
@@ -70,6 +70,21 @@ type ProjectManagementActionInput
     allowDirtyWorktree?: boolean
     workItemId?: string
     status?: UpdateProjectWorkItemPayload['patch']['status']
+  }
+  | {
+    action: 'summarize_progress'
+    projectId?: string | null
+    rootPath?: string | null
+    issuePrefix?: string | null
+    identifier?: string | null
+    title?: string | null
+    goal?: string | null
+    acceptanceCriteria?: string[] | string | null
+    commitPrefix?: string | null
+    allowDuplicateIdentifier?: boolean | null
+    allowDirtyWorktree?: boolean | null
+    workItemId?: string | null
+    status?: UpdateProjectWorkItemPayload['patch']['status'] | null
   }
   | {
     action: 'create_work_item'
@@ -183,8 +198,8 @@ const projectManagementParams = {
   properties: {
     action: {
       type: 'string',
-      enum: ['list_projects', 'register_project', 'list_work_items', 'create_work_item', 'update_work_item', 'delete_work_item', 'start_work_item', 'open_board'],
-      description: 'Choose one project-management action.',
+      enum: ['list_projects', 'register_project', 'list_work_items', 'summarize_progress', 'create_work_item', 'update_work_item', 'delete_work_item', 'start_work_item', 'open_board'],
+      description: 'Choose one project-management action. Use summarize_progress for project progress, status, blocked, review, or specific work-item status questions.',
     },
     rootPath: {
       ...nullableStringSchema,
@@ -302,6 +317,188 @@ function summarizeWorkItems(snapshot: ProjectManagementSnapshot, input: {
     .join('\n')
 }
 
+const statusLabels: Record<string, string> = {
+  queued: '대기',
+  todo: 'TODO',
+  in_progress: '진행 중',
+  in_review: '리뷰 중',
+  done: '완료',
+  blocked: '막힘',
+}
+
+const lifecycleLabels: Record<string, string> = {
+  blocked: '막힘',
+  completed: '완료됨',
+  integrating: '통합 중',
+  planning: '계획 중',
+  queued: '대기 중',
+  reviewing: '리뷰 중',
+  validating: '검증 중',
+  working: '작업 중',
+}
+
+const worktreeStateLabels: Record<string, string> = {
+  active: 'worktree 활성',
+  none: 'worktree 없음',
+  preserved: 'worktree 보존',
+  removed: 'worktree 정리됨',
+}
+
+function summarizeTextSnippet(text: string, limit = 180): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
+}
+
+function summarizeCount(count: number, unit = '개') {
+  return `${count}${unit}`
+}
+
+function getProgressPercent(doneCount: number, totalCount: number) {
+  return totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0
+}
+
+function getLatestRun(snapshot: ProjectManagementSnapshot, workItemId: string) {
+  return snapshot.runs
+    .filter(run => run.workItemId === workItemId)
+    .sort((a, b) => (b.finishedAt ?? b.startedAt) - (a.finishedAt ?? a.startedAt))
+    .at(0)
+}
+
+function getLatestComments(snapshot: ProjectManagementSnapshot, workItemId: string, limit: number) {
+  return snapshot.comments
+    .filter(comment => comment.workItemId === workItemId)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, limit)
+}
+
+function formatRunSummary(snapshot: ProjectManagementSnapshot, workItemId: string): string | undefined {
+  const run = getLatestRun(snapshot, workItemId)
+  if (!run)
+    return undefined
+
+  const completedSubtasks = run.subtaskProgress?.filter(item => item.status === 'done').length ?? 0
+  const totalSubtasks = run.subtaskProgress?.length ?? 0
+  const details = [
+    `${statusLabels[run.status] ?? run.status}`,
+    run.lifecycleStatus ? `단계 ${lifecycleLabels[run.lifecycleStatus] ?? run.lifecycleStatus}` : '',
+    `시도 ${run.attempt}`,
+    run.planSummary ? `계획: ${summarizeTextSnippet(run.planSummary, 120)}` : '',
+    totalSubtasks > 0 ? `서브태스크 ${completedSubtasks}/${totalSubtasks}` : '',
+    run.changedFiles.length > 0 ? `변경 파일 ${run.changedFiles.length}개` : '',
+    run.verificationCommands?.length ? `검증 명령 ${run.verificationCommands.length}개` : '',
+    run.testSummary ? `테스트: ${summarizeTextSnippet(run.testSummary)}` : '',
+    run.error ? `오류: ${summarizeTextSnippet(run.error)}` : '',
+    run.commitHash ? `커밋 ${run.commitHash.slice(0, 8)}` : '',
+    run.worktreeState && run.worktreeState !== 'none' ? worktreeStateLabels[run.worktreeState] ?? run.worktreeState : '',
+  ].filter(Boolean)
+
+  return details.join(', ')
+}
+
+function formatWorkItemProgressLine(snapshot: ProjectManagementSnapshot, item: ProjectManagementSnapshot['workItems'][number]): string {
+  const runSummary = formatRunSummary(snapshot, item.id)
+  return runSummary
+    ? `- ${item.identifier}: ${item.title} (${statusLabels[item.status]}; ${runSummary})`
+    : `- ${item.identifier}: ${item.title} (${statusLabels[item.status]})`
+}
+
+function formatFocusedWorkItemProgress(snapshot: ProjectManagementSnapshot, item: ProjectManagementSnapshot['workItems'][number]): string {
+  const project = snapshot.projects.find(candidate => candidate.id === item.projectId)
+  const latestComments = getLatestComments(snapshot, item.id, 3)
+  const runSummary = formatRunSummary(snapshot, item.id)
+  const lines = [
+    `${item.identifier} 상태: ${statusLabels[item.status]}`,
+    `- 프로젝트: ${project?.name ?? item.projectId}`,
+    `- 제목: ${item.title}`,
+    item.goal ? `- 목표: ${item.goal}` : '',
+    item.acceptanceCriteria.length > 0 ? `- 완료 조건: ${item.acceptanceCriteria.join(' / ')}` : '',
+    runSummary ? `- 최근 실행: ${runSummary}` : '',
+    ...latestComments.map(comment => `- 최근 메모(${comment.actorType}/${comment.kind}): ${summarizeTextSnippet(comment.content, 220)}`),
+  ].filter(Boolean)
+
+  return lines.join('\n')
+}
+
+function formatStatusDistribution(workItems: ProjectManagementSnapshot['workItems']) {
+  const counts = Object.fromEntries(WORK_ITEM_STATUSES.map(status => [
+    status,
+    workItems.filter(item => item.status === status).length,
+  ])) as Record<NonNullable<UpdateProjectWorkItemPayload['patch']['status']>, number>
+
+  return WORK_ITEM_STATUSES
+    .map(status => `${statusLabels[status]} ${summarizeCount(counts[status])}`)
+    .join(', ')
+}
+
+function summarizeProjectProgress(snapshot: ProjectManagementSnapshot, input: {
+  identifier?: string | null
+  issuePrefix?: string | null
+  projectId?: string | null
+  rootPath?: string | null
+  status?: UpdateProjectWorkItemPayload['patch']['status'] | null
+}): string {
+  if (snapshot.projects.length === 0)
+    return '등록된 프로젝트가 없어. 프로젝트를 먼저 등록하면 진행상황을 알려줄 수 있어.'
+
+  const identifier = textOrUndefined(input.identifier)?.toUpperCase()
+  if (identifier) {
+    const item = snapshot.workItems.find(candidate => candidate.identifier === identifier)
+    return item
+      ? formatFocusedWorkItemProgress(snapshot, item)
+      : `일감 ${identifier}을 찾지 못했어.`
+  }
+
+  const projectId = resolveSingleProjectId(snapshot, input)
+  const projects = projectId
+    ? snapshot.projects.filter(project => project.id === projectId)
+    : snapshot.projects
+
+  if (projects.length === 0)
+    return '요청한 프로젝트를 찾지 못했어.'
+
+  const sections = projects.map((project) => {
+    const workItems = snapshot.workItems
+      .filter(item => item.projectId === project.id)
+      .sort((a, b) => a.position - b.position || a.identifier.localeCompare(b.identifier))
+    if (workItems.length === 0)
+      return `${project.name} (${project.issuePrefix}) 진행상황:\n- 등록된 일감이 없어.`
+
+    const doneCount = workItems.filter(item => item.status === 'done').length
+    const focusedItems = input.status
+      ? workItems.filter(item => item.status === input.status)
+      : [
+          ...workItems.filter(item => item.status === 'blocked'),
+          ...workItems.filter(item => item.status === 'in_progress'),
+          ...workItems.filter(item => item.status === 'in_review'),
+          ...workItems.filter(item => item.status === 'todo').slice(0, 3),
+        ]
+    const recentComments = snapshot.comments
+      .filter(comment => workItems.some(item => item.id === comment.workItemId))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 2)
+
+    return [
+      `${project.name} (${project.issuePrefix}) 진행상황:`,
+      `- 진행률: ${doneCount}/${workItems.length} 완료 (${getProgressPercent(doneCount, workItems.length)}%)`,
+      `- 상태 분포: ${formatStatusDistribution(workItems)}`,
+      input.status
+        ? `- ${statusLabels[input.status]} 일감: ${focusedItems.length > 0 ? '' : '없어.'}`
+        : '- 우선 확인할 일감:',
+      focusedItems.length > 0
+        ? focusedItems.slice(0, 6).map(item => formatWorkItemProgressLine(snapshot, item)).join('\n')
+        : '',
+      recentComments.length > 0
+        ? [
+            '- 최근 메모:',
+            ...recentComments.map(comment => `  - ${comment.actorType}/${comment.kind}: ${summarizeTextSnippet(comment.content, 220)}`),
+          ].join('\n')
+        : '',
+    ].filter(Boolean).join('\n')
+  })
+
+  return sections.join('\n\n')
+}
+
 function textOrUndefined(input: string | null | undefined): string | undefined {
   const value = input?.trim()
   return value || undefined
@@ -370,6 +567,15 @@ export async function executeProjectManagementAction(
     case 'list_work_items': {
       return summarizeWorkItems(await invokers.getSnapshot(), {
         projectId: input.projectId,
+        status: input.status,
+      })
+    }
+    case 'summarize_progress': {
+      return summarizeProjectProgress(await invokers.getSnapshot(), {
+        identifier: input.identifier,
+        issuePrefix: input.issuePrefix,
+        projectId: input.projectId,
+        rootPath: input.rootPath,
         status: input.status,
       })
     }

@@ -229,10 +229,11 @@ app.whenReady().then(async () => {
   }
 
   injeca.invoke({
-    dependsOn: { mainWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig, projectManagement },
+    dependsOn: { mainWindow, chatWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig, projectManagement },
     callback: async (deps) => {
       const { context } = createContext(ipcMain)
       await deps.airiHttpServer.start()
+      await deps.chatWindow()
       await setupArtistryBridge({
         widgetsManager: deps.widgetsWindow,
         context,

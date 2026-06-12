@@ -5,8 +5,11 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
+  normalizeSuggestedTestCommands,
+  recommendImpactedProjectTestCommands,
   recommendProjectTestCommands,
   runProjectTestCommand,
+  selectProjectValidationCommands,
 } from './tests'
 
 async function withTempProject<T>(fn: (root: string) => Promise<T>): Promise<T> {
@@ -65,6 +68,93 @@ describe('project test recommendations', () => {
 
       expect(result.command).toBeUndefined()
       expect(result.summary).toContain('No test command could be inferred')
+    })
+  })
+
+  it('keeps typecheck inside the validation budget for typed changes', async () => {
+    await withTempProject(async (root) => {
+      await writeFile(join(root, 'pnpm-lock.yaml'), '')
+      await writeFile(join(root, 'package.json'), JSON.stringify({
+        scripts: {
+          test: 'vitest run',
+          typecheck: 'tsc --noEmit',
+        },
+      }))
+
+      // ROOT CAUSE:
+      //
+      // Typed source changes previously appended typecheck after configured,
+      // suggested, and generic inferred scripts. The default maxCommands=3
+      // could then drop typecheck for Vue/TypeScript work.
+      //
+      // We fixed this by prioritizing the inferred typecheck command before
+      // other inferred package scripts when typed files changed.
+      const selected = await selectProjectValidationCommands({
+        changedFiles: ['src/App.vue'],
+        configuredCommand: 'pnpm lint',
+        projectRoot: root,
+        suggestedCommands: ['Inspect git diff', 'pnpm exec vitest run src/App.test.ts'],
+      })
+
+      expect(normalizeSuggestedTestCommands(['Inspect manually', 'nodeevil run', 'pnpm test'])).toEqual(['pnpm test'])
+      expect(selected.recommendations.map(item => item.command)).toEqual([
+        'pnpm lint',
+        'pnpm exec vitest run src/App.test.ts',
+        'pnpm typecheck',
+      ])
+    })
+  })
+
+  it('prioritizes configured verifier commands before model-suggested checks', async () => {
+    await withTempProject(async (root) => {
+      await writeFile(join(root, 'pnpm-lock.yaml'), '')
+      await writeFile(join(root, 'package.json'), JSON.stringify({
+        scripts: {
+          test: 'vitest run',
+          typecheck: 'tsc --noEmit',
+        },
+      }))
+
+      const selected = await selectProjectValidationCommands({
+        changedFiles: ['src/App.vue'],
+        projectRoot: root,
+        suggestedCommands: ['pnpm exec vitest run src/App.test.ts'],
+        verifierCommands: ['pnpm lint', 'pnpm lint', 'Inspect manually'],
+      })
+
+      expect(selected.recommendations.map(item => item.command)).toEqual([
+        'pnpm lint',
+        'pnpm exec vitest run src/App.test.ts',
+        'pnpm typecheck',
+      ])
+      expect(selected.recommendations[0]?.reason).toBe('project verifier command')
+    })
+  })
+
+  it('prefers tests located near changed files', async () => {
+    await withTempProject(async (root) => {
+      await writeFile(join(root, 'pnpm-lock.yaml'), '')
+      await writeFile(join(root, 'package.json'), JSON.stringify({
+        scripts: {
+          test: 'vitest run',
+          typecheck: 'tsc --noEmit',
+        },
+      }))
+      await writeFile(join(root, 'widget.ts'), 'export const widget = true\n')
+      await writeFile(join(root, 'widget.test.ts'), 'import { widget } from "./widget"\n')
+
+      const impacted = await recommendImpactedProjectTestCommands({
+        changedFiles: ['widget.ts'],
+        projectRoot: root,
+      })
+      const selected = await selectProjectValidationCommands({
+        changedFiles: ['widget.ts'],
+        projectRoot: root,
+      })
+
+      expect(impacted[0]?.command).toBe('pnpm exec vitest run ./widget.test.ts')
+      expect(selected.recommendations[0]?.command).toBe('pnpm exec vitest run ./widget.test.ts')
+      expect(selected.recommendations[1]?.command).toBe('pnpm typecheck')
     })
   })
 })

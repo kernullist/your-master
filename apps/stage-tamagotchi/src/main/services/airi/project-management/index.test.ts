@@ -35,6 +35,7 @@ describe('project management service', () => {
     })
 
     expect(parsed.settings.maxConcurrentRuns).toBe(2)
+    expect(parsed.settings.verifierCommands).toEqual([])
   })
 
   it('explains dirty git files before starting a work item', () => {

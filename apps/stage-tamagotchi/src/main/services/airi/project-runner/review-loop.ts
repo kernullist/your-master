@@ -1,5 +1,21 @@
 import type { Project, ProjectAgentSettings, WorkItem } from '@proj-airi/stage-projects'
 
+import type { ProjectRunnerFailureKind } from './failure'
+
+import { classifyProjectRunnerFailure } from './failure'
+
+/**
+ * Subtask progress reported by the worker while executing a manager brief.
+ */
+export interface ProjectSubtaskProgress {
+  /** Manager-provided or worker-created subtask title. */
+  title: string
+  /** Current subtask state. */
+  status: 'blocked' | 'done' | 'in_progress' | 'todo'
+  /** Evidence, blocker detail, or implementation note for this subtask. */
+  evidence?: string
+}
+
 /**
  * Input sent to the worker agent for one attempt.
  */
@@ -12,8 +28,12 @@ export interface WorkerAgentInput {
   attempt: number
   /** Reviewer comment from the previous failed attempt. */
   previousReviewerComment?: string
+  /** Structured reviewer feedback from the previous failed attempt. */
+  previousReviewerFeedback?: string
   /** Diff summary from the previous worker attempt. */
   previousDiffSummary?: string
+  /** Earlier failure notes collected before this run. */
+  failureMemory?: string[]
 }
 
 /**
@@ -22,12 +42,29 @@ export interface WorkerAgentInput {
 export interface WorkerAgentResult {
   /** Files changed by this worker attempt. */
   changedFiles: string[]
+  /** Worker-provided evidence for each acceptance criterion. */
+  acceptanceEvidence?: Array<{
+    /** Acceptance criterion text. */
+    criterion: string
+    /** Evidence from files, diffs, tests, or reasoned non-applicability. */
+    evidence: string
+    /** Worker status for this criterion. */
+    status: 'missing' | 'not_applicable' | 'satisfied'
+  }>
   /** Compact diff summary. */
   diffSummary: string
   /** Short worker note. */
   comment: string
   /** Optional test result summary. */
   testSummary?: string
+  /** Worker-reported subtask execution progress. */
+  subtaskProgress?: ProjectSubtaskProgress[]
+  /** Optional reason when the worker cannot continue without user/project input. */
+  blockedReason?: string
+  /** Questions the user needs to answer before the work can continue. */
+  blockedQuestions?: string[]
+  /** Stable failure category when the worker blocks. */
+  failureKind?: ProjectRunnerFailureKind
 }
 
 /**
@@ -52,6 +89,36 @@ export interface ReviewerAgentResult {
   passed: boolean
   /** Reviewer feedback shown in work item comments. */
   comment: string
+  /** Blocking or non-blocking issues found by the reviewer. */
+  findings?: Array<{
+    /** Reviewer severity label. */
+    severity: 'blocker' | 'major' | 'minor' | 'nit'
+    /** Optional project-relative file path. */
+    file?: string
+    /** Optional one-based line number. */
+    line?: number
+    /** Issue summary. */
+    message: string
+    /** Change needed before approval, when applicable. */
+    requiredChange?: string
+  }>
+  /** Explicit required changes sent back to the worker. */
+  requiredChanges?: string[]
+  /** Extra validation commands or checks the reviewer wants. */
+  suggestedTests?: string[]
+  /** Reviewer evidence for each acceptance criterion. */
+  acceptanceEvidence?: Array<{
+    /** Acceptance criterion text. */
+    criterion: string
+    /** Evidence from files, diffs, tests, or reasoned non-applicability. */
+    evidence: string
+    /** Reviewer status for this criterion. */
+    status: 'missing' | 'not_applicable' | 'satisfied'
+  }>
+  /** Reviewer confidence in the decision, from 0 to 1. */
+  confidence?: number
+  /** Stable failure category when review rejects or a gate blocks. */
+  failureKind?: ProjectRunnerFailureKind
 }
 
 /**
@@ -64,6 +131,8 @@ export interface ProjectReviewLoopOptions {
   workItem: WorkItem
   /** Global AIRI project settings. */
   settings: Pick<ProjectAgentSettings, 'maxReviewRetries'>
+  /** Earlier failure notes collected before this run. */
+  failureMemory?: string[]
   /** Runs the coding agent for one attempt. */
   runWorker: (input: WorkerAgentInput) => Promise<WorkerAgentResult>
   /** Runs the reviewer agent for one attempt. */
@@ -86,8 +155,44 @@ export interface ProjectReviewLoopResult {
   attempts: number
   /** Unique files changed by worker attempts. */
   changedFiles: string[]
+  /** Latest worker subtask progress, including blocked subtasks. */
+  subtaskProgress?: ProjectSubtaskProgress[]
   /** Last reviewer comment. */
   reviewerComment?: string
+  /** Reason the worker stopped before review, when it needed outside input. */
+  blockedReason?: string
+  /** Stable failure category for blocked results. */
+  failureKind?: ProjectRunnerFailureKind
+}
+
+function formatReviewerFeedback(review: ReviewerAgentResult): string {
+  return [
+    review.comment,
+    review.failureKind ? `Failure kind: ${review.failureKind}` : '',
+    review.requiredChanges?.length ? `Required changes:\n${review.requiredChanges.map(item => `- ${item}`).join('\n')}` : '',
+    review.findings?.length
+      ? `Findings:\n${review.findings.map((finding) => {
+        const location = finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ''})` : ''
+        return `- [${finding.severity}]${location} ${finding.message}${finding.requiredChange ? ` -> ${finding.requiredChange}` : ''}`
+      }).join('\n')}`
+      : '',
+    review.suggestedTests?.length ? `Suggested tests:\n${review.suggestedTests.map(item => `- ${item}`).join('\n')}` : '',
+    review.acceptanceEvidence?.length
+      ? `Acceptance evidence:\n${review.acceptanceEvidence.map(item => `- [${item.status}] ${item.criterion}: ${item.evidence}`).join('\n')}`
+      : '',
+  ].filter(Boolean).join('\n\n')
+}
+
+function formatReviewerComment(review: ReviewerAgentResult): string {
+  const details = formatReviewerFeedback(review)
+  const confidence = typeof review.confidence === 'number'
+    ? `\n신뢰도: ${Math.round(review.confidence * 100)}%`
+    : ''
+  return `리뷰 결과: ${details}${confidence}`.trim()
+}
+
+function formatSubtaskProgress(progress: ProjectSubtaskProgress[]): string {
+  return `서브태스크 진행상황:\n${progress.map(item => `- [${item.status}] ${item.title}${item.evidence ? `: ${item.evidence}` : ''}`).join('\n')}`
 }
 
 /**
@@ -114,7 +219,10 @@ export interface ProjectReviewLoopResult {
 export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): Promise<ProjectReviewLoopResult> {
   const changedFiles = new Set<string>()
   let previousReviewerComment: string | undefined
+  let previousReviewerFeedback: string | undefined
   let previousDiffSummary: string | undefined
+  let previousFailureKind: ProjectRunnerFailureKind | undefined
+  let latestSubtaskProgress: ProjectSubtaskProgress[] | undefined
 
   for (let attempt = 0; attempt < options.settings.maxReviewRetries; attempt += 1) {
     const attemptLabel = `${attempt + 1}/${options.settings.maxReviewRetries}`
@@ -129,17 +237,46 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
       workItem: options.workItem,
       attempt,
       previousReviewerComment,
+      previousReviewerFeedback,
       previousDiffSummary,
+      failureMemory: options.failureMemory,
     })
 
     for (const file of workerResult.changedFiles) {
       changedFiles.add(file)
     }
     previousDiffSummary = workerResult.diffSummary
+    latestSubtaskProgress = workerResult.subtaskProgress
     await options.addComment('worker', 'worker', workerResult.comment)
+    if (workerResult.subtaskProgress?.length)
+      await options.addComment('worker', 'status', formatSubtaskProgress(workerResult.subtaskProgress))
     await options.addComment('worker', 'diff', workerResult.diffSummary)
     if (workerResult.testSummary)
       await options.addComment('system', 'test', workerResult.testSummary)
+    if (workerResult.blockedReason) {
+      const classification = classifyProjectRunnerFailure({
+        blockedReason: workerResult.blockedReason,
+        changedFiles: workerResult.changedFiles,
+      })
+      const questions = workerResult.blockedQuestions?.length
+        ? `\n확인할 질문:\n${workerResult.blockedQuestions.map(question => `- ${question}`).join('\n')}`
+        : ''
+      await options.addComment(
+        'system',
+        'status',
+        `워커가 사용자 확인이 필요해서 멈췄어.\n분류: ${workerResult.failureKind ?? classification?.kind ?? 'worker_blocked'}\n사유: ${workerResult.blockedReason}${questions}`,
+      )
+      await options.updateStatus('blocked')
+      return {
+        passed: false,
+        attempts: attempt + 1,
+        changedFiles: [...changedFiles],
+        subtaskProgress: latestSubtaskProgress,
+        blockedReason: workerResult.blockedReason,
+        failureKind: workerResult.failureKind ?? classification?.kind ?? 'worker_blocked',
+        reviewerComment: previousReviewerComment,
+      }
+    }
     await options.addComment(
       'worker',
       'worker',
@@ -159,7 +296,9 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
       workerResult,
     })
     previousReviewerComment = review.comment
-    await options.addComment('reviewer', 'review', `리뷰 결과: ${review.comment}`)
+    previousReviewerFeedback = formatReviewerFeedback(review)
+    previousFailureKind = review.failureKind
+    await options.addComment('reviewer', 'review', formatReviewerComment(review))
 
     if (review.passed) {
       await options.updateStatus('done')
@@ -167,6 +306,7 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
         passed: true,
         attempts: attempt + 1,
         changedFiles: [...changedFiles],
+        subtaskProgress: latestSubtaskProgress,
         reviewerComment: review.comment,
       }
     }
@@ -175,10 +315,17 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
   await options.revertChanges([...changedFiles])
   await options.addComment('system', 'status', 'Review failed after maximum retries. Agent changes were reverted.')
   await options.updateStatus('blocked')
+  const classification = classifyProjectRunnerFailure({
+    changedFiles: [...changedFiles],
+    reviewComment: previousReviewerComment,
+    runStatus: 'blocked',
+  })
   return {
     passed: false,
     attempts: options.settings.maxReviewRetries,
     changedFiles: [...changedFiles],
+    subtaskProgress: latestSubtaskProgress,
     reviewerComment: previousReviewerComment,
+    failureKind: previousFailureKind ?? classification?.kind ?? 'review_rejected',
   }
 }

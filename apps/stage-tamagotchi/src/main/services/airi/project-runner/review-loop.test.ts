@@ -109,4 +109,46 @@ describe('project review loop', () => {
     expect(reverted).toHaveBeenCalledWith(['file-0.ts', 'file-1.ts'])
     expect(statuses.at(-1)).toBe('blocked')
   })
+
+  it('passes structured reviewer feedback back to the worker', async () => {
+    const runWorker = vi.fn(async input => ({
+      changedFiles: [`file-${input.attempt}.ts`],
+      diffSummary: `diff ${input.attempt}`,
+      comment: input.previousReviewerFeedback ?? 'initial',
+    }))
+
+    const result = await runProjectReviewLoop({
+      project,
+      workItem,
+      settings: { maxReviewRetries: 2 },
+      runWorker,
+      runReviewer: async input => ({
+        passed: input.attempt === 1,
+        comment: input.attempt === 0 ? 'Needs a guard' : 'Looks good',
+        findings: input.attempt === 0
+          ? [{
+              severity: 'blocker',
+              file: 'file-0.ts',
+              line: 10,
+              message: 'Missing guard',
+              requiredChange: 'Add the guard before returning',
+            }]
+          : [],
+        requiredChanges: input.attempt === 0 ? ['Add the guard'] : [],
+        suggestedTests: input.attempt === 0 ? ['pnpm test'] : [],
+        confidence: 0.8,
+      }),
+      updateStatus: async () => {},
+      addComment: async () => {},
+      revertChanges: async () => {},
+    })
+
+    expect(result.passed).toBe(true)
+    expect(runWorker).toHaveBeenLastCalledWith(expect.objectContaining({
+      previousReviewerFeedback: expect.stringContaining('Required changes'),
+    }))
+    expect(runWorker).toHaveBeenLastCalledWith(expect.objectContaining({
+      previousReviewerFeedback: expect.stringContaining('[blocker] (file-0.ts:10) Missing guard'),
+    }))
+  })
 })

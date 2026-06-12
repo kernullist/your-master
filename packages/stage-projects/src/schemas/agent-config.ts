@@ -15,6 +15,7 @@ export const projectAgentSettingsSchema = v.object({
   maxReviewRetries: v.pipe(v.number(), v.integer(), v.minValue(1)),
   maxConcurrentRuns: v.pipe(v.number(), v.integer(), v.minValue(1)),
   autoCommit: v.boolean(),
+  verifierCommands: v.optional(v.array(v.string()), []),
   shellDenylist: v.array(v.string()),
   shellAllowlist: v.array(v.string()),
   forbiddenPathPatterns: v.array(v.string()),

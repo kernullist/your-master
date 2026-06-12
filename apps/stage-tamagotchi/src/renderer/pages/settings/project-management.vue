@@ -49,6 +49,7 @@ const rootPath = ref('')
 const issuePrefix = ref('')
 const snapshot = ref<Awaited<ReturnType<typeof getSnapshot>>>()
 const settingsDraft = ref<ProjectAgentSettings>(createSerializableSettings(defaultProjectAgentSettings))
+const verifierCommandsText = ref(defaultProjectAgentSettings.verifierCommands.join('\n'))
 const shellDenylistText = ref(defaultProjectAgentSettings.shellDenylist.join('\n'))
 const shellAllowlistText = ref(defaultProjectAgentSettings.shellAllowlist.join('\n'))
 const forbiddenPathPatternsText = ref(defaultProjectAgentSettings.forbiddenPathPatterns.join('\n'))
@@ -159,6 +160,8 @@ function createSerializableAgentConfig(config: AgentModelConfig): AgentModelConf
 }
 
 function createSerializableSettings(settings: ProjectAgentSettings): ProjectAgentSettings {
+  const verifierCommands = Array.isArray(settings.verifierCommands) ? settings.verifierCommands : []
+
   return {
     projectManager: createSerializableAgentConfig(settings.projectManager),
     worker: createSerializableAgentConfig(settings.worker),
@@ -166,6 +169,7 @@ function createSerializableSettings(settings: ProjectAgentSettings): ProjectAgen
     maxReviewRetries: Number(settings.maxReviewRetries),
     maxConcurrentRuns: Number(settings.maxConcurrentRuns),
     autoCommit: Boolean(settings.autoCommit),
+    verifierCommands: verifierCommands.map(item => String(item)),
     shellDenylist: [...settings.shellDenylist].map(item => String(item)),
     shellAllowlist: [...settings.shellAllowlist].map(item => String(item)),
     forbiddenPathPatterns: [...settings.forbiddenPathPatterns].map(item => String(item)),
@@ -178,6 +182,7 @@ function createSerializableSettingsDraft(): ProjectAgentSettings {
   const settings = createSerializableSettings(settingsDraft.value)
   return {
     ...settings,
+    verifierCommands: parseSettingsListText(verifierCommandsText.value),
     shellDenylist: parseSettingsListText(shellDenylistText.value),
     shellAllowlist: parseSettingsListText(shellAllowlistText.value),
     forbiddenPathPatterns: parseSettingsListText(forbiddenPathPatternsText.value),
@@ -242,6 +247,7 @@ async function loadCodexCliModels() {
 async function refreshSnapshot() {
   snapshot.value = await getSnapshot()
   settingsDraft.value = createSerializableSettings(snapshot.value.settings)
+  verifierCommandsText.value = settingsDraft.value.verifierCommands.join('\n')
   shellDenylistText.value = settingsDraft.value.shellDenylist.join('\n')
   shellAllowlistText.value = settingsDraft.value.shellAllowlist.join('\n')
   forbiddenPathPatternsText.value = settingsDraft.value.forbiddenPathPatterns.join('\n')
@@ -552,7 +558,12 @@ watch(hasCodexCliAgent, async (enabled) => {
         />
       </div>
 
-      <div :class="['grid gap-3 md:grid-cols-3']">
+      <div :class="['grid gap-3 md:grid-cols-4']">
+        <FieldTextArea
+          v-model="verifierCommandsText"
+          label="Verifier 명령"
+          :rows="5"
+        />
         <FieldTextArea
           v-model="shellDenylistText"
           label="금지 명령"

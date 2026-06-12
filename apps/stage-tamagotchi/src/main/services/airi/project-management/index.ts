@@ -55,6 +55,7 @@ export const projectAgentSettingsPersistenceSchema = v.object({
   maxReviewRetries: v.pipe(v.number(), v.integer(), v.minValue(1)),
   maxConcurrentRuns: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), 2),
   autoCommit: v.boolean(),
+  verifierCommands: v.optional(v.array(v.string()), []),
   shellDenylist: v.array(v.string()),
   shellAllowlist: v.array(v.string()),
   forbiddenPathPatterns: v.array(v.string()),

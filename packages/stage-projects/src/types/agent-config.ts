@@ -32,6 +32,8 @@ export interface ProjectAgentSettings {
   maxConcurrentRuns: number
   /** Whether AIRI commits automatically after review passes. */
   autoCommit: boolean
+  /** Extra validation commands that should be considered verifier checks for every run. */
+  verifierCommands: string[]
   /** Shell command substrings that are denied before execution. */
   shellDenylist: string[]
   /** Shell command prefixes allowed by policy; empty means all non-denied commands. */
@@ -64,6 +66,7 @@ export const defaultProjectAgentSettings: ProjectAgentSettings = {
   maxReviewRetries: 5,
   maxConcurrentRuns: 2,
   autoCommit: true,
+  verifierCommands: [],
   shellDenylist: ['rm', 'del', 'git reset', 'git clean'],
   shellAllowlist: [],
   forbiddenPathPatterns: [],

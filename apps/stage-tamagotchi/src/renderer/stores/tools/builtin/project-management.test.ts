@@ -1,4 +1,5 @@
 import type { Project, WorkItem } from '@proj-airi/stage-projects'
+import type { JsonSchema } from 'xsschema'
 
 import type {
   CreateProjectWorkItemPayload,
@@ -20,7 +21,7 @@ import {
   projectManagementTools,
 } from './project-management'
 
-function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapshot, 'projects' | 'workItems'>>): ProjectManagementInvokers {
+function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapshot, 'projects' | 'workItems' | 'comments' | 'runs'>>): ProjectManagementInvokers {
   const registerProjectMock = vi.fn(async (payload: RegisterProjectPayload): Promise<Project> => ({
     id: 'project-1',
     name: 'demo',
@@ -91,8 +92,8 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
         createdAt: 1,
         updatedAt: 1,
       }],
-      comments: [],
-      runs: [],
+      comments: snapshotOverride?.comments ?? [],
+      runs: snapshotOverride?.runs ?? [],
       settings: {
         projectManager: { provider: 'lm-studio', model: 'project-manager', systemPrompt: 'Project Manager' },
         worker: { provider: 'lm-studio', model: 'worker', systemPrompt: 'Worker' },
@@ -100,6 +101,7 @@ function createInvokers(snapshotOverride?: Partial<Pick<ProjectManagementSnapsho
         maxReviewRetries: 5,
         maxConcurrentRuns: 2,
         autoCommit: true,
+        verifierCommands: [],
         shellDenylist: ['rm'],
         shellAllowlist: [],
         forbiddenPathPatterns: [],
@@ -281,15 +283,157 @@ describe('project management built-in tool', () => {
     expect(result).not.toContain('AIRI-13')
   })
 
+  it('summarizes overall project progress with status counts and recent execution detail', async () => {
+    const invokers = createInvokers({
+      workItems: [
+        {
+          id: 'work-1',
+          projectId: 'project-1',
+          identifier: 'AIRI-12',
+          title: 'Add board',
+          goal: 'Show board',
+          acceptanceCriteria: ['Done'],
+          status: 'in_progress',
+          position: 0,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+        {
+          id: 'work-2',
+          projectId: 'project-1',
+          identifier: 'AIRI-13',
+          title: 'Fix failing tests',
+          goal: 'Tests pass',
+          acceptanceCriteria: ['Done'],
+          status: 'blocked',
+          position: 1,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+        {
+          id: 'work-3',
+          projectId: 'project-1',
+          identifier: 'AIRI-14',
+          title: 'Ship summary',
+          goal: 'Ship',
+          acceptanceCriteria: ['Done'],
+          status: 'done',
+          position: 2,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ],
+      comments: [
+        {
+          id: 'comment-1',
+          workItemId: 'work-1',
+          actorType: 'worker',
+          kind: 'worker',
+          content: 'Implemented the board shell.',
+          createdAt: 5,
+        },
+      ],
+      runs: [
+        {
+          id: 'run-1',
+          workItemId: 'work-1',
+          status: 'in_progress',
+          attempt: 1,
+          changedFiles: ['src/board.ts'],
+          startedAt: 2,
+        },
+      ],
+    })
+
+    const result = await executeProjectManagementAction({
+      action: 'summarize_progress',
+    }, { invokers })
+
+    expect(result).toContain('demo (AIRI) 진행상황')
+    expect(result).toContain('진행률: 1/3 완료 (33%)')
+    expect(result).toContain('진행 중 1개')
+    expect(result).toContain('막힘 1개')
+    expect(result).toContain('AIRI-12: Add board')
+    expect(result).toContain('변경 파일 1개')
+    expect(result).toContain('Implemented the board shell.')
+  })
+
+  it('summarizes one work item status by identifier', async () => {
+    const invokers = createInvokers({
+      workItems: [
+        {
+          id: 'work-1',
+          projectId: 'project-1',
+          identifier: 'AIRI-12',
+          title: 'Add board',
+          goal: 'Show project progress',
+          acceptanceCriteria: ['Progress summary works'],
+          status: 'in_review',
+          position: 0,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+      ],
+      comments: [
+        {
+          id: 'comment-1',
+          workItemId: 'work-1',
+          actorType: 'reviewer',
+          kind: 'review',
+          content: 'Needs one copy tweak.',
+          createdAt: 5,
+        },
+      ],
+    })
+
+    const result = await executeProjectManagementAction({
+      action: 'summarize_progress',
+      identifier: 'AIRI-12',
+    }, { invokers })
+
+    expect(result).toContain('AIRI-12 상태: 리뷰 중')
+    expect(result).toContain('목표: Show project progress')
+    expect(result).toContain('완료 조건: Progress summary works')
+    expect(result).toContain('Needs one copy tweak.')
+  })
+
+  it('keeps progress summaries compact when recent run logs are long', async () => {
+    const invokers = createInvokers({
+      runs: [
+        {
+          id: 'run-1',
+          workItemId: 'work-1',
+          status: 'blocked',
+          attempt: 2,
+          changedFiles: ['src/app.ts'],
+          testSummary: `Command: pnpm typecheck\n${'very long output '.repeat(40)}`,
+          startedAt: 2,
+        },
+      ],
+    })
+
+    const result = await executeProjectManagementAction({
+      action: 'summarize_progress',
+      identifier: 'AIRI-12',
+    }, { invokers })
+
+    expect(result).toContain('테스트: Command: pnpm typecheck')
+    expect(result.length).toBeLessThan(700)
+  })
+
   it('exposes a provider-safe strict object schema', async () => {
     const tools = await projectManagementTools()
     const tool = tools.find(item => item.function.name === 'stage_project_management')
+    const schema = tool?.function.parameters as JsonSchema | undefined
 
-    expect(tool?.function.parameters).toMatchObject({
+    expect(schema).toMatchObject({
       type: 'object',
       additionalProperties: false,
     })
-    expect(tool?.function.parameters.required).toContain('action')
-    expect(tool?.function.parameters.required).toContain('status')
+    expect(schema?.required).toContain('action')
+    expect(schema?.required).toContain('status')
+    expect(schema?.properties?.action).toMatchObject({
+      enum: expect.arrayContaining(['summarize_progress']),
+    })
   })
 })

@@ -1,5 +1,29 @@
 export type WorkItemRunStatus = 'queued' | 'in_progress' | 'in_review' | 'done' | 'blocked'
 
+export type WorkItemRunLifecycleStatus
+  = | 'blocked'
+    | 'completed'
+    | 'integrating'
+    | 'planning'
+    | 'queued'
+    | 'reviewing'
+    | 'validating'
+    | 'working'
+
+export type WorkItemRunWorktreeState = 'active' | 'none' | 'preserved' | 'removed'
+
+/**
+ * Records the latest known state of one manager/worker subtask.
+ */
+export interface WorkItemRunSubtaskProgress {
+  /** Manager-provided or worker-created subtask title. */
+  title: string
+  /** Current subtask state. */
+  status: 'blocked' | 'done' | 'in_progress' | 'todo'
+  /** Evidence, blocker detail, or implementation note for this subtask. */
+  evidence?: string
+}
+
 /**
  * Records one local worker/reviewer execution attempt for a work item.
  */
@@ -10,14 +34,30 @@ export interface WorkItemRunRecord {
   workItemId: string
   /** Current run status. */
   status: WorkItemRunStatus
+  /** Current orchestration phase shown in progress summaries. */
+  lifecycleStatus?: WorkItemRunLifecycleStatus
   /** Current review attempt, starting at 0. */
   attempt: number
   /** File paths changed by the worker. */
   changedFiles: string[]
+  /** Current worktree lifecycle state. */
+  worktreeState?: WorkItemRunWorktreeState
   /** Local git worktree path used by the worker and reviewer agents. */
   worktreePath?: string
   /** Git branch checked out in the worker worktree. */
   branchName?: string
+  /** Project Manager summary used as the execution plan artifact. */
+  planSummary?: string
+  /** Ordered plan steps given to worker and reviewer agents. */
+  planSteps?: string[]
+  /** Risk notes the reviewer should keep in mind. */
+  riskNotes?: string[]
+  /** Review focus areas from the project manager. */
+  reviewFocus?: string[]
+  /** Deterministic verifier commands AIRI planned for this run. */
+  verificationCommands?: string[]
+  /** Latest subtask progress reported by the worker. */
+  subtaskProgress?: WorkItemRunSubtaskProgress[]
   /** Short diff summary shown in board details. */
   diffSummary?: string
   /** Short worker comment shown in board details. */
@@ -36,6 +76,8 @@ export interface WorkItemRunRecord {
   error?: string
   /** Epoch milliseconds when the run started. */
   startedAt: number
+  /** Epoch milliseconds when the runner last recorded progress. */
+  lastActivityAt?: number
   /** Epoch milliseconds when the run finished. */
   finishedAt?: number
 }

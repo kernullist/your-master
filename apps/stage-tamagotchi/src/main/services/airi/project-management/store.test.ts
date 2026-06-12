@@ -1,4 +1,4 @@
-import type { WorkItem, WorkItemStatus } from '@proj-airi/stage-projects'
+import type { ProjectAgentSettings, WorkItem, WorkItemStatus } from '@proj-airi/stage-projects'
 
 import type { ProjectManagementState } from './store'
 
@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createDefaultProjectManagementState,
   createProjectManagementStore,
+  mergeProjectAgentSettings,
 } from './store'
 
 function createTestStore() {
@@ -188,11 +189,31 @@ describe('project management store', () => {
     })
     const cleaned = store.updateSettings({
       shellDenylist: ['rm', 'del', 'git reset', 'git clean', 'rm', ' del '],
+      verifierCommands: ['pnpm typecheck', 'pnpm test', 'pnpm typecheck', ' pnpm test '],
     })
 
     expect(first.shellDenylist).toEqual(['rm', 'del', 'git reset', 'git clean'])
     expect(second.shellDenylist).toEqual(['rm', 'del', 'git reset', 'git clean'])
     expect(cleaned.shellDenylist).toEqual(['rm', 'del', 'git reset', 'git clean'])
+    expect(cleaned.verifierCommands).toEqual(['pnpm typecheck', 'pnpm test'])
+  })
+
+  // ROOT CAUSE:
+  //
+  // Older persisted settings snapshots can miss fields that were added later.
+  // The list merge path used an undefined fallback directly, so the first save
+  // after an upgrade could throw before validation had a chance to write defaults.
+  //
+  // We fixed this by treating missing fallback lists as empty lists.
+  it('keeps legacy settings snapshots without verifier commands loadable', () => {
+    const defaults = createDefaultProjectManagementState().settings
+    const legacy = { ...defaults } as Partial<ProjectAgentSettings>
+    delete legacy.verifierCommands
+
+    const merged = mergeProjectAgentSettings(legacy as ProjectAgentSettings, {})
+
+    expect(merged.verifierCommands).toEqual([])
+    expect(merged.shellDenylist).toEqual(defaults.shellDenylist)
   })
 
   it('keeps an intentionally cleared denylist empty after saving settings', () => {

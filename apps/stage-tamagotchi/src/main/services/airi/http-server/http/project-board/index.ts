@@ -279,6 +279,22 @@ export function renderProjectBoardHtml(): string {
       done: 'Done',
       blocked: 'Blocked',
     };
+    const lifecycleLabels = {
+      blocked: 'Blocked',
+      completed: 'Completed',
+      integrating: 'Integrating',
+      planning: 'Planning',
+      queued: 'Queued',
+      reviewing: 'Reviewing',
+      validating: 'Validating',
+      working: 'Working',
+    };
+    const worktreeStateLabels = {
+      active: 'Worktree active',
+      none: 'No worktree',
+      preserved: 'Worktree preserved',
+      removed: 'Worktree cleaned',
+    };
     const activeStatuses = new Set(['todo', 'in_progress', 'in_review']);
     let snapshot = { projects: [], workItems: [], comments: [], runs: [] };
     let selectedProjectId = null;
@@ -607,6 +623,18 @@ export function renderProjectBoardHtml(): string {
       }
       const comments = snapshot.comments.filter(comment => comment.workItemId === item.id);
       const run = snapshot.runs.filter(candidate => candidate.workItemId === item.id).at(-1);
+      const subtaskProgress = run?.subtaskProgress ?? [];
+      const runDetails = run
+        ? '<div class="comment"><strong>Run · ' + escapeHtml(lifecycleLabels[run.lifecycleStatus] ?? run.status) + '</strong><br>'
+          + [
+              run.planSummary ? 'Plan · ' + escapeHtml(run.planSummary) : '',
+              run.verificationCommands?.length ? 'Verifier commands · ' + escapeHtml(run.verificationCommands.join(', ')) : '',
+              run.worktreeState && run.worktreeState !== 'none' ? escapeHtml(worktreeStateLabels[run.worktreeState] ?? run.worktreeState) : '',
+              run.changedFiles?.length ? 'Changed files · ' + escapeHtml(run.changedFiles.join(', ')) : '',
+            ].filter(Boolean).join('<br>')
+          + (subtaskProgress.length ? '<br>Subtasks<br>' + subtaskProgress.map(task => '- [' + escapeHtml(task.status) + '] ' + escapeHtml(task.title) + (task.evidence ? ': ' + escapeHtml(task.evidence) : '')).join('<br>') : '')
+          + '</div>'
+        : '';
       el.innerHTML = '<h2>' + escapeHtml(item.identifier) + '</h2>'
         + '<div class="card-meta"><span class="status-pill status-' + escapeHtml(item.status) + '">' + escapeHtml(statusLabels[item.status] ?? item.status) + '</span></div>'
         + '<div class="meta">' + escapeHtml(item.title) + '</div>'
@@ -619,7 +647,7 @@ export function renderProjectBoardHtml(): string {
         + (item.status === 'todo' ? '<button data-action="start">Start</button>' : '')
         + '<button data-action="delete">Delete</button>'
         + '</div>'
-        + '<div class="comments">' + comments.map(comment => '<div class="comment"><strong>' + escapeHtml(comment.actorType) + ' · ' + escapeHtml(comment.kind) + '</strong><br>' + escapeHtml(comment.content) + '</div>').join('') + '</div>';
+        + '<div class="comments">' + runDetails + comments.map(comment => '<div class="comment"><strong>' + escapeHtml(comment.actorType) + ' · ' + escapeHtml(comment.kind) + '</strong><br>' + escapeHtml(comment.content) + '</div>').join('') + '</div>';
       el.querySelector('[data-action="edit"]').onclick = () => {
         detailMode = 'edit';
         renderWorkItemForm(item);

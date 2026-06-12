@@ -213,4 +213,66 @@ describe('project runner git helpers', () => {
       }
     })
   }, 15000)
+
+  it('treats already-applied agent branch changes as integrated', async () => {
+    await withGitProject(async (root) => {
+      const firstWorktree = await createAgentWorktree({
+        projectRoot: root,
+        workItem: {
+          identifier: 'AIRI-12',
+        },
+        branchName: 'airi/work/airi-12/run-first',
+      })
+      const secondWorktree = await createAgentWorktree({
+        projectRoot: root,
+        workItem: {
+          identifier: 'AIRI-13',
+        },
+        branchName: 'airi/work/airi-13/run-second',
+      })
+
+      try {
+        await writeFile(join(firstWorktree.path, 'agent.txt'), 'same accepted change\n')
+        await writeFile(join(secondWorktree.path, 'agent.txt'), 'same accepted change\n')
+
+        const firstCommit = await commitAgentChangedFiles({
+          projectRoot: firstWorktree.path,
+          files: ['agent.txt'],
+          workItem: {
+            identifier: 'AIRI-12',
+            title: 'Apply shared agent text',
+          },
+        })
+        const secondCommit = await commitAgentChangedFiles({
+          projectRoot: secondWorktree.path,
+          files: ['agent.txt'],
+          workItem: {
+            identifier: 'AIRI-13',
+            title: 'Apply shared agent text again',
+          },
+        })
+        const firstIntegration = await integrateAgentBranchIntoProject({
+          projectRoot: root,
+          branchName: firstWorktree.branchName,
+        })
+        const secondIntegration = await integrateAgentBranchIntoProject({
+          projectRoot: root,
+          branchName: secondWorktree.branchName,
+        })
+        const status = await runGit(root, ['status', '--porcelain'])
+
+        expect(firstCommit.committed).toBe(true)
+        expect(secondCommit.committed).toBe(true)
+        expect(firstIntegration.integrated).toBe(true)
+        expect(secondIntegration.integrated).toBe(true)
+        expect(secondIntegration.conflict).toBe(false)
+        expect(secondIntegration.skipped).toBe(true)
+        expect(status.stdout.trim()).toBe('')
+      }
+      finally {
+        await removeAgentWorktree(root, firstWorktree.path)
+        await removeAgentWorktree(root, secondWorktree.path)
+      }
+    })
+  }, 15000)
 })

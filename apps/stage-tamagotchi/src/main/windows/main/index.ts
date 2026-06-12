@@ -13,12 +13,10 @@ import type { SettingsWindowManager } from '../settings'
 import type { WidgetsWindowManager } from '../widgets'
 
 import { dirname, join, resolve } from 'node:path'
-import { env } from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 import clickDragPlugin from 'electron-click-drag-plugin'
 
-import { is } from '@electron-toolkit/utils'
 import { defineInvokeHandler } from '@moeru/eventa'
 import { createContext } from '@moeru/eventa/adapters/electron/main'
 import { initScreenCaptureForWindow } from '@proj-airi/electron-screen-capture/main'
@@ -105,16 +103,6 @@ export async function setupMainWindow(params: {
   onAppBeforeQuit(() => {
     allowClose = true
   })
-
-  // NOTICE: in development mode, open devtools by default
-  if (is.dev || env.MAIN_APP_DEBUG || env.APP_DEBUG) {
-    try {
-      window.webContents.openDevTools({ mode: 'detach' })
-    }
-    catch (err) {
-      console.error('failed to open devtools:', err)
-    }
-  }
 
   function handleNewBounds(newBounds: Rectangle) {
     const config = getConfig()
