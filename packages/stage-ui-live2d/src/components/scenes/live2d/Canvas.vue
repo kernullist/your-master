@@ -62,6 +62,9 @@ async function initLive2DPixiStage(parent: HTMLDivElement) {
     preserveDrawingBuffer: true,
     autoDensity: false,
     resolution: 1,
+    // MSAA on the WebGL context: smooths the character outline, which is
+    // otherwise visibly aliased since the canvas is sampled by CSS scaling.
+    antialias: true,
   })
 
   installRenderGuard(pixiApp.value)

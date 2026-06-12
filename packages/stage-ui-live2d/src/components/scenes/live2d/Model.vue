@@ -112,13 +112,52 @@ const breakpoints = useBreakpoints(breakpointsTailwind)
 const isMobile = computed(() => breakpoints.between('sm', 'md').value || breakpoints.smaller('sm').value)
 const dropShadowFilter = shallowRef(new DropShadowFilter({
   alpha: 0.2,
-  blur: 0,
+  // Soft shadow edge; 0 produced a hard duplicated silhouette behind the
+  // character instead of a natural ambient shadow.
+  blur: 8,
   distance: 20,
   rotation: 45,
 }))
 
 function getCoreModel() {
   return model.value!.internalModel.coreModel as any
+}
+
+/**
+ * Strengthens the SDK-driven breathing on the chest parameter.
+ *
+ * pixi-live2d-display installs a CubismBreath effect by default, but its
+ * `ParamBreath` entry uses peak 0.5 with weight 0.5 — an effective amplitude
+ * of 0.25 on a 0..1 parameter, which is barely visible on most models. This
+ * raises it to the full parameter range and slows the cycle to a calm pace
+ * (~15 breaths/min) so the character reads as alive while idle.
+ *
+ * Breath values are applied via `addParameterValueById` (additive), so this
+ * never fights motion curves or the expression controller.
+ */
+function enhanceBreathing(internalModel: PixiLive2DInternalModel) {
+  // NOTICE:
+  // `breath` is not part of pixi-live2d-display's public typings but exists on
+  // Cubism4InternalModel (set up in its constructor; see
+  // `node_modules/pixi-live2d-display/dist/index.es.js`, Cubism4InternalModel.init).
+  // Removal condition: typings export `breath`/`BreathParameterData` upstream.
+  const breath = (internalModel as any).breath as {
+    getParameters: () => { parameterId: string, offset: number, peak: number, cycle: number, weight: number }[]
+    setParameters: (params: unknown[]) => void
+  } | undefined
+
+  if (!breath)
+    return
+
+  const parameters = breath.getParameters()
+  for (const parameter of parameters) {
+    if (parameter.parameterId === 'ParamBreath') {
+      parameter.peak = 1.0
+      parameter.cycle = 4.0
+      parameter.weight = 1.0
+    }
+  }
+  breath.setParameters(parameters)
 }
 
 let resizeAnimation: ReturnType<typeof animate> | undefined
@@ -437,6 +476,8 @@ async function loadModel() {
     // toggled off at runtime.
     savedEyeBlink.value = internalModel.eyeBlink
     savedExpressionManager.value = motionManager.expressionManager
+
+    enhanceBreathing(internalModel)
 
     // --- Expression controller initialisation (conditional)
     if (live2dExpressionEnabled.value) {
