@@ -43,6 +43,29 @@ const router = createRouter({
   routes: setupLayouts(routes as RouteRecordRaw[]),
 })
 
+// NOTICE:
+// When the vite dev server re-optimizes lazily discovered dependencies it
+// force-reloads the renderer; route chunks fetched mid-swap then fail with
+// "Failed to fetch dynamically imported module" and the window is left blank
+// (no stage page, no character). One full reload after the optimizer settles
+// recovers cleanly, so retry exactly once per failure burst.
+// Root cause: vite dep re-optimization racing route-level dynamic imports.
+// Removal condition: all renderer deps are pre-bundled via optimizeDeps.include
+// and the reload no longer occurs in dev logs.
+let dynamicImportRecoveryAttempted = false
+router.onError((error) => {
+  const message = error instanceof Error ? error.message : String(error)
+  if (!message.includes('Failed to fetch dynamically imported module'))
+    return
+
+  if (dynamicImportRecoveryAttempted)
+    return
+
+  dynamicImportRecoveryAttempted = true
+  console.warn('[router] dynamic import failed (dev re-optimization race); reloading window once to recover')
+  setTimeout(() => window.location.reload(), 1_000)
+})
+
 createApp(App)
   .use(MotionPlugin)
   // TODO: Fix autoAnimatePlugin type error

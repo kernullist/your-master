@@ -101,6 +101,33 @@ export default defineConfig({
     },
 
     optimizeDeps: {
+      // NOTICE:
+      // Vite discovers these dependencies lazily (dynamic imports inside
+      // stage-ui scenes/workers), re-optimizes mid-session and force-reloads
+      // the renderer ("optimized dependencies changed. reloading"). In the
+      // Electron renderer that reload races route dynamic imports and leaves
+      // a blank window (no stage page, no character). Pre-bundling them at
+      // dev-server start removes the mid-session reload entirely. List built
+      // from "new dependencies optimized:" lines in dev logs.
+      // Removal condition: vite/electron-vite handles re-optimization without
+      // a full reload, or the lazy imports move into the static graph.
+      include: [
+        // Direct dependencies of this app (resolvable from the project root).
+        '@huggingface/transformers',
+        'three/examples/jsm/controls/OrbitControls.js',
+        'three/examples/jsm/lights/LightProbeGenerator.js',
+        'three/examples/jsm/loaders/RGBELoader.js',
+        'valibot',
+        // Nested dependencies of workspace packages: bare names are NOT
+        // resolvable from the app root under pnpm isolation and get silently
+        // ignored, so use vite's `parent > child` form. (kokoro-js and
+        // @stdlib/* sit behind the source-aliased @proj-airi/stage-ui and
+        // cannot be pre-bundled this way — the router-level reload recovery
+        // in src/renderer/main.ts covers those.)
+        '@proj-airi/stage-ui-live2d > pixi-filters',
+        '@proj-airi/stage-ui-three > @tresjs/post-processing',
+        '@proj-airi/stage-ui-three > postprocessing',
+      ],
       exclude: [
         // Internal Packages
         '@proj-airi/stage-ui/*',
