@@ -297,6 +297,24 @@ export const electronScreenshotCapture = defineInvokeEventa<ElectronScreenshotRe
 
 export const electronNotify = defineInvokeEventa<{ ok: boolean }, { title: string, body: string }>('eventa:invoke:electron:notify')
 
+/** Snapshot of basic system resource metrics. */
+export interface ElectronSystemInfo {
+  platform: string
+  release: string
+  arch: string
+  hostname: string
+  uptimeSec: number
+  cpuModel: string
+  cpuCount: number
+  /** Aggregate CPU busy percentage over a short sampling window (0-100). */
+  cpuUsagePercent: number
+  memTotalBytes: number
+  memFreeBytes: number
+  memUsedPercent: number
+}
+
+export const electronSystemInfo = defineInvokeEventa<ElectronSystemInfo, void>('eventa:invoke:electron:system-info')
+
 export const electronFilesRead = defineInvokeEventa<ElectronFileReadResult, { path: string }>('eventa:invoke:electron:files:read')
 export const electronFilesList = defineInvokeEventa<ElectronFileListResult, { path: string }>('eventa:invoke:electron:files:list')
 export const electronFilesWrite = defineInvokeEventa<ElectronFileWriteResult, { path: string, content: string }>('eventa:invoke:electron:files:write')

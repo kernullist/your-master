@@ -16,6 +16,7 @@ reads are free.
 | `clipboard_read` | Read clipboard text (16KB cap) | none | `desktop-io` |
 | `clipboard_write` | Replace clipboard text | none | `desktop-io` |
 | `screenshot` | Capture primary screen to a PNG under Pictures, return its path | none | `desktop-io` |
+| `system_info` | Read CPU/memory usage, OS info, hostname, uptime | none | `system-info` |
 | `remember` | Save a durable fact about the user (per character) | none | `stage-ui` memory store |
 | `recall_memories` | List remembered facts for the active character | none | `stage-ui` memory store |
 | `forget` | Delete a remembered fact by id | none | `stage-ui` memory store |
@@ -43,6 +44,8 @@ What the user can say in chat to trigger each tool:
 | "방금 복사한 거 정리해줘" | `clipboard_read` |
 | "이 결과 클립보드에 넣어줘" | `clipboard_write` |
 | "지금 화면 캡처해줘" | `screenshot` (saved to Pictures) |
+| "메모리 얼마나 쓰고 있어?" / "내 PC 사양 알려줘" | `system_info` |
+| "뭐가 CPU 잡아먹고 있어?" | `system_info` + `run_command` (tasklist) |
 | "내 이름은 꿀보야, 기억해" | `remember` |
 | "나에 대해 뭘 알고 있어?" | `recall_memories` |
 | "그 사실은 잊어줘" | `forget` |

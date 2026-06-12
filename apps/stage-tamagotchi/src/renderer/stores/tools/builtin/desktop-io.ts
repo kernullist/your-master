@@ -9,6 +9,7 @@ import {
   electronClipboardRead,
   electronClipboardWrite,
   electronScreenshotCapture,
+  electronSystemInfo,
 } from '../../../../shared/eventa'
 
 function createInvokers() {
@@ -17,7 +18,13 @@ function createInvokers() {
     clipboardRead: defineInvoke(context, electronClipboardRead),
     clipboardWrite: defineInvoke(context, electronClipboardWrite),
     screenshot: defineInvoke(context, electronScreenshotCapture),
+    systemInfo: defineInvoke(context, electronSystemInfo),
   }
+}
+
+/** Bytes -> GiB with one decimal, for human/model-readable memory figures. */
+function toGiB(bytes: number): number {
+  return Math.round((bytes / 1024 / 1024 / 1024) * 10) / 10
 }
 
 type Invokers = ReturnType<typeof createInvokers>
@@ -60,6 +67,24 @@ const tools: Promise<Tool>[] = [
         return `Error: ${result.error}`
       }
       return JSON.stringify({ path: result.path, width: result.width, height: result.height })
+    },
+    parameters: z.object({}),
+  }),
+  tool({
+    name: 'system_info',
+    description: 'Read the computer\'s current resource usage and OS info: CPU model/cores/usage %, memory total/free/used %, OS platform/version, hostname, uptime. Use when the user asks how their PC is doing, what is using resources, or for system specs. For a per-process list, use run_command with "tasklist".',
+    execute: async () => {
+      const info = await getInvokers().systemInfo()
+      return JSON.stringify({
+        os: `${info.platform} ${info.release} (${info.arch})`,
+        hostname: info.hostname,
+        uptimeHours: Math.round((info.uptimeSec / 3600) * 10) / 10,
+        cpu: `${info.cpuModel} x${info.cpuCount}`,
+        cpuUsagePercent: info.cpuUsagePercent,
+        memoryTotalGiB: toGiB(info.memTotalBytes),
+        memoryFreeGiB: toGiB(info.memFreeBytes),
+        memoryUsedPercent: info.memUsedPercent,
+      })
     },
     parameters: z.object({}),
   }),
