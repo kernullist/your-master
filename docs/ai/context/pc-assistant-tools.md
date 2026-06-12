@@ -91,8 +91,8 @@ conversational-style prompt instructs the model accordingly).
 
 The conversational-style system prompt
 (`packages/stage-ui/src/constants/prompts/conversational-style.ts`) includes a
-short "What you can do on this computer" summary. With ~19 built-in tools plus
-MCP tools exposed at once, a weak local model otherwise has to infer its
+short "What you can do on this computer" summary. With two dozen-plus built-in
+tools plus MCP tools exposed at once, a weak local model otherwise has to infer its
 abilities from tool schemas alone; the summary improves tool selection and
 willingness to act. Keep it concise and update it when capability areas change
 (not per individual tool).
