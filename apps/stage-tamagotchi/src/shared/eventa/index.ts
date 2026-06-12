@@ -230,6 +230,75 @@ export interface ElectronMcpCallToolResult {
   isError?: boolean
 }
 
+/** Result of reading a text file from the local filesystem. */
+export interface ElectronFileReadResult {
+  /** UTF-8 file content; absent when `error` is set. */
+  content?: string
+  /** Set when the read was rejected (missing, binary, too large, a directory). */
+  error?: string
+  /** True when content was cut at the read size cap. */
+  truncated?: boolean
+  /** File size in bytes as reported by stat. */
+  size?: number
+}
+
+/** A single directory entry returned by the list operation. */
+export interface ElectronFileListEntry {
+  name: string
+  type: 'file' | 'directory'
+  /** Present for files only. */
+  size?: number
+}
+
+/** Result of listing a directory. */
+export interface ElectronFileListResult {
+  entries?: ElectronFileListEntry[]
+  error?: string
+  /** True when the listing was cut at the entry cap. */
+  truncated?: boolean
+}
+
+/** Result of a write request; `ok: false` covers both denial and failure. */
+export interface ElectronFileWriteResult {
+  ok: boolean
+  /** Human/model-readable outcome, e.g. "user denied the modification". */
+  message: string
+}
+
+/** Result of a shell command execution request. */
+export interface ElectronCommandRunResult {
+  /** True only when the user approved and the command ran to completion. */
+  ok: boolean
+  /** Process exit code, when the command actually ran. */
+  exitCode?: number
+  /** Captured stdout (truncated). */
+  stdout?: string
+  /** Captured stderr (truncated). */
+  stderr?: string
+  /** Outcome message for denial, block, timeout, or spawn failure. */
+  message: string
+}
+
+export const electronCommandRun = defineInvokeEventa<ElectronCommandRunResult, { command: string, cwd?: string }>('eventa:invoke:electron:command:run')
+
+export const electronClipboardRead = defineInvokeEventa<{ text: string }>('eventa:invoke:electron:clipboard:read')
+export const electronClipboardWrite = defineInvokeEventa<{ ok: boolean }, { text: string }>('eventa:invoke:electron:clipboard:write')
+
+/** Result of a screenshot capture; the image is saved to disk and its path returned. */
+export interface ElectronScreenshotResult {
+  /** Absolute path of the saved PNG, when successful. */
+  path?: string
+  width?: number
+  height?: number
+  error?: string
+}
+
+export const electronScreenshotCapture = defineInvokeEventa<ElectronScreenshotResult, void>('eventa:invoke:electron:screenshot:capture')
+
+export const electronFilesRead = defineInvokeEventa<ElectronFileReadResult, { path: string }>('eventa:invoke:electron:files:read')
+export const electronFilesList = defineInvokeEventa<ElectronFileListResult, { path: string }>('eventa:invoke:electron:files:list')
+export const electronFilesWrite = defineInvokeEventa<ElectronFileWriteResult, { path: string, content: string }>('eventa:invoke:electron:files:write')
+
 export const electronMcpOpenConfigFile = defineInvokeEventa<{ path: string }>('eventa:invoke:electron:mcp:open-config-file')
 export const electronMcpApplyAndRestart = defineInvokeEventa<ElectronMcpStdioApplyResult>('eventa:invoke:electron:mcp:apply-and-restart')
 export const electronMcpGetRuntimeStatus = defineInvokeEventa<ElectronMcpStdioRuntimeStatus>('eventa:invoke:electron:mcp:get-runtime-status')

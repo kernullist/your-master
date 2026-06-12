@@ -27,6 +27,7 @@ import { setElectronMainDirname } from './libs/electron/location'
 import { createI18n } from './libs/i18n'
 import { createWindowAuthManagerService } from './services/airi/auth'
 import { setupServerChannel } from './services/airi/channel-server'
+import { setupDesktopAssistantServices } from './services/airi/desktop-assistant'
 import { setupGodotStageManager } from './services/airi/godot-stage'
 import { setupBuiltInServer } from './services/airi/http-server'
 import { createProjectBoardServer } from './services/airi/http-server/http/project-board'
@@ -232,6 +233,10 @@ app.whenReady().then(async () => {
     dependsOn: { mainWindow, chatWindow, tray, serverChannel, airiHttpServer, godotStageManager, pluginHost, mcpStdioManager, onboardingWindow: onboardingWindowManager, widgetsWindow: widgetsManager, artistryConfig, projectManagement },
     callback: async (deps) => {
       const { context } = createContext(ipcMain)
+      // Register the PC-assistant tools once on a window-less context so a
+      // single renderer invoke does not fire per-window handlers (which made
+      // the approval dialog appear twice). See setupDesktopAssistantServices.
+      setupDesktopAssistantServices(ipcMain)
       await deps.airiHttpServer.start()
       await deps.chatWindow()
       await setupArtistryBridge({

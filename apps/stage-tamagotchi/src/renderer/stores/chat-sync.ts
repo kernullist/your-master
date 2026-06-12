@@ -16,7 +16,11 @@ import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
 import { projectManagementWorkItemStatusChanged } from '../../shared/eventa'
+import { commandExecTools } from './tools/builtin/command-exec'
+import { desktopIoTools } from './tools/builtin/desktop-io'
+import { fileAccessTools } from './tools/builtin/file-access'
 import { imageJournalTools } from './tools/builtin/image-journal'
+import { memoryTools } from './tools/builtin/memory'
 import { executeProjectManagementAction, projectManagementTools } from './tools/builtin/project-management'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
@@ -542,17 +546,21 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
       'widgets': async () => {
-        const [w, we, pm] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools()])
-        return [...w, ...we, ...pm]
+        const [w, we, pm, fa, ce, dio, mem] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools()])
+        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem]
       },
       'artistry': async () => {
-        const [ai, wi, we, pm] = await Promise.all([
+        const [ai, wi, we, pm, fa, ce, dio, mem] = await Promise.all([
           imageJournalTools(),
           widgetsTools(),
           weatherTools(),
           projectManagementTools(),
+          fileAccessTools(),
+          commandExecTools(),
+          desktopIoTools(),
+          memoryTools(),
         ])
-        return [...ai, ...wi, ...we, ...pm]
+        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem]
       },
       'project-management': async () => {
         return projectManagementTools()

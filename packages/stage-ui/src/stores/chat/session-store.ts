@@ -9,11 +9,13 @@ import { CONVERSATIONAL_STYLE_PROMPT } from '../../constants/prompts/conversatio
 import { chatSessionsRepo } from '../../database/repos/chat-sessions.repo'
 import { useAuthStore } from '../auth'
 import { useAiriCardStore } from '../modules/airi-card'
+import { formatMemoriesForPrompt, useChatMemoryStore } from './memory-store'
 import { mergeLoadedSessionMessages } from './session-message-merge'
 
 export const useChatSessionStore = defineStore('chat-session', () => {
   const { userId } = storeToRefs(useAuthStore())
   const { activeCardId, systemPrompt } = storeToRefs(useAiriCardStore())
+  const memoryStore = useChatMemoryStore()
 
   const activeSessionId = ref<string>('')
   const sessionMessages = ref<Record<string, ChatHistoryItem[]>>({})
@@ -83,7 +85,16 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     // Style guidance goes after the character card so its conversational
     // rules take precedence over generic verbosity habits, while the card
     // still owns persona, lore, and emotion-token instructions.
-    const content = `${codeBlockSystemPrompt + mathSyntaxSystemPrompt + prompt}\n\n${CONVERSATIONAL_STYLE_PROMPT}`
+    let content = `${codeBlockSystemPrompt + mathSyntaxSystemPrompt + prompt}\n\n${CONVERSATIONAL_STYLE_PROMPT}`
+
+    // Long-term memory for the active character is appended last. It is read
+    // synchronously from the already-loaded store; the memory tool calls
+    // ensureLoaded before writing, and ensureSession refreshes the system
+    // message on every send, so newly remembered facts reach the next turn.
+    const memorySection = formatMemoriesForPrompt(memoryStore.list(getCurrentCharacterId()))
+    if (memorySection) {
+      content = `${content}\n\n${memorySection}`
+    }
 
     return {
       role: 'system',
@@ -528,6 +539,13 @@ export const useChatSessionStore = defineStore('chat-session', () => {
       return
     void ensureActiveSessionForCharacter()
   })
+
+  // Hydrate the active character's long-term memory so the synchronous
+  // system-message composer (generateInitialMessageFromPrompt) can read it.
+  // Runs on activation change and once at setup for the initial card.
+  watch(activeCardId, () => {
+    void memoryStore.ensureLoaded(getCurrentCharacterId())
+  }, { immediate: true })
 
   return {
     ready,
