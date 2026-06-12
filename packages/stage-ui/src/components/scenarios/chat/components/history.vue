@@ -74,6 +74,41 @@ useChatHistoryScroll({
   getKey: getChatHistoryItemKey,
 })
 
+// Day dividers: only roles that render a visible bubble participate, so a
+// leading system message never produces (or suppresses) a divider.
+const visibleDividerRoles = new Set(['user', 'assistant', 'error'])
+
+const { locale } = useI18n()
+const dayLabelFormatter = computed(() => new Intl.DateTimeFormat(locale.value, { dateStyle: 'medium' }))
+
+// Local-timezone calendar-day key; avoids UTC day flips near midnight that
+// a `toISOString().slice(0, 10)` approach would produce.
+function dayKeyOf(ts?: number) {
+  if (ts == null)
+    return null
+
+  const date = new Date(ts)
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`
+}
+
+// One label per message index; non-null marks "first visible message of a new
+// calendar day". Precomputed so the template stays O(n).
+const dividerLabels = computed<(string | null)[]>(() => {
+  let previousDayKey: string | null = null
+
+  return renderMessages.value.map((message) => {
+    if (!visibleDividerRoles.has(message.role) || message.createdAt == null)
+      return null
+
+    const currentDayKey = dayKeyOf(message.createdAt)
+    if (!currentDayKey || currentDayKey === previousDayKey)
+      return null
+
+    previousDayKey = currentDayKey
+    return dayLabelFormatter.value.format(message.createdAt)
+  })
+})
+
 function emitCopyMessage(message: ChatHistoryItem, index: number) {
   emit('copyMessage', {
     message,
@@ -103,6 +138,15 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
   <div ref="chatHistoryRef" v-auto-animate flex="~ col" relative h-full w-full overflow-y-auto rounded-xl px="<sm:2" py="<sm:2" :class="variant === 'mobile' ? 'gap-1' : 'gap-2'">
     <template v-for="(message, index) in renderMessages" :key="getChatHistoryItemKey(message, index)">
       <div
+        v-if="dividerLabels[index]"
+        data-chat-day-divider
+        :class="['flex items-center gap-3 px-2 py-1', 'select-none']"
+      >
+        <div :class="['h-px flex-1', 'bg-neutral-300/50 dark:bg-neutral-700/50']" />
+        <span :class="['text-xs', 'text-neutral-500 dark:text-neutral-400']">{{ dividerLabels[index] }}</span>
+        <div :class="['h-px flex-1', 'bg-neutral-300/50 dark:bg-neutral-700/50']" />
+      </div>
+      <div
         :data-chat-message-index="index"
         :data-chat-message-key="String(getChatHistoryItemKey(message, index))"
         :data-chat-message-role="message.role"
@@ -124,6 +168,7 @@ function emitRetryMessage(message: ChatHistoryItem, index: number) {
           :message="message"
           :label="labels.assistant"
           :show-placeholder="shouldShowPlaceholder(message) && showStreamingPlaceholder"
+          :streaming="sending && shouldShowPlaceholder(message)"
           :variant="variant"
           @copy="emitCopyMessage(message, index)"
           @delete="emitDeleteMessage(message, index)"

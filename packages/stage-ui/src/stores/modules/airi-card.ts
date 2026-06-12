@@ -78,6 +78,55 @@ export interface AiriCard extends Card {
   } & Card['extensions']
 }
 
+/**
+ * Composes the system prompt text for a character card.
+ *
+ * Use when:
+ * - Building the per-session system message for the active card.
+ *
+ * Expects:
+ * - A card whose prompt-bearing fields (systemPrompt/description/personality)
+ *   may each be empty; `creator notes` are deliberately excluded (CCv3 marks
+ *   them as human-facing, not model-facing).
+ *
+ * Returns:
+ * - Joined prompt text. When the card has a `name` and none of the
+ *   prompt-bearing fields already declare one, an identity line is prepended
+ *   so the model actually knows the name typed into the card editor.
+ */
+export function composeCardSystemPrompt(card: {
+  name?: string
+  systemPrompt?: string
+  description?: string
+  personality?: string
+  extensions?: { airi?: { modules?: { artistry?: { widgetInstruction?: string } } } }
+}): string {
+  const components = [
+    card.systemPrompt,
+    card.description,
+    card.personality,
+    card.extensions?.airi?.modules?.artistry?.widgetInstruction,
+  ].filter(Boolean) as string[]
+
+  const name = card.name?.trim()
+  if (name) {
+    // NOTICE:
+    // The card `name` field was previously UI-only and never reached the
+    // model, so naming a character in the editor had no effect on replies.
+    // The phrase check keeps cards that already define a name in prose (for
+    // example the default card's "Your name is AIRI") authoritative instead
+    // of fighting them with a contradictory injected line. English-only
+    // heuristic: the bundled default prompt is English.
+    // Removal condition: cards adopt {{char}} macro substitution.
+    const alreadyNamed = components.some(component => /your name is/i.test(component))
+    if (!alreadyNamed) {
+      components.unshift(`Your name is "${name}". When asked for your name, answer "${name}".`)
+    }
+  }
+
+  return components.join('\n\n')
+}
+
 export const useAiriCardStore = defineStore('airi-card', () => {
   const { t } = useI18n()
 
@@ -345,14 +394,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
       if (!card)
         return ''
 
-      const components = [
-        card.systemPrompt,
-        card.description,
-        card.personality,
-        card.extensions?.airi?.modules?.artistry?.widgetInstruction,
-      ].filter(Boolean)
-
-      return components.join('\n\n')
+      return composeCardSystemPrompt(card)
     }),
   }
 })

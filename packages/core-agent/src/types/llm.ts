@@ -3,6 +3,10 @@ import type { CommonContentPart, CompletionToolCall, CompletionToolResult, Messa
 
 export type StreamEvent
   = | { type: 'text-delta', text: string }
+    // Emitted by xsai for `delta.reasoning` / `delta.reasoning_content`
+    // chunks produced by reasoning models (e.g. DeepSeek-R1, Qwen thinking
+    // variants served through LM Studio). Not part of the spoken reply.
+    | { type: 'reasoning-delta', text: string }
     | ({ type: 'finish' } & any)
     | ({ type: 'tool-call' } & CompletionToolCall)
     | (CompletionToolResult & { type: 'tool-error' })

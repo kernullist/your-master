@@ -20,6 +20,7 @@ import { formatContextPromptText } from './chat/context-prompt'
 import { createMinecraftContext } from './chat/context-providers'
 import { useChatContextStore } from './chat/context-store'
 import { formatTimePrefix } from './chat/datetime-prefix'
+import { applyHistoryWindow } from './chat/history-window'
 import { createChatHooks } from './chat/hooks'
 import { useChatSessionStore } from './chat/session-store'
 import { useChatStreamStore } from './chat/stream-store'
@@ -271,6 +272,14 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       const categorizer = createStreamingCategorizer(activeProvider.value)
       let streamPosition = 0
 
+      // Reasoning emitted natively by the model (xsai `reasoning-delta`
+      // events from `delta.reasoning` / `delta.reasoning_content`). Kept
+      // separate from `fullText`: it is shown in the collapsible reasoning
+      // section but never spoken, persisted as content, or sent back to the
+      // LLM as part of the reply.
+      let nativeReasoning = ''
+      let reasoningCharsSinceUiFlush = 0
+
       const parser = useLlmmarkerParser({
         onLiteral: async (literal) => {
           if (shouldAbort())
@@ -313,7 +322,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
           buildingMessage.categorization = {
             speech: finalCategorization.speech,
-            reasoning: finalCategorization.reasoning,
+            // Tag-based reasoning (<think> blocks inside the text) wins when
+            // present; otherwise keep the natively streamed reasoning so it
+            // is not wiped at finalization.
+            reasoning: finalCategorization.reasoning || nativeReasoning,
           }
           updateUI()
         },
@@ -349,7 +361,21 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       // See `./chat/datetime-prefix.ts` for the rationale.
       const nowTs = Date.now()
 
-      const newMessages = sessionMessagesForSend.map((msg) => {
+      // Bound the prompt size before composing: the full session history stays
+      // intact in the session store (and in the UI); only the per-turn view
+      // sent to the LLM is windowed. See `./chat/history-window.ts` for the
+      // KV-cache-friendly hysteresis rationale.
+      const historyWindow = applyHistoryWindow(sessionMessagesForSend)
+      if (historyWindow.droppedCount > 0) {
+        contextObservability.recordLifecycle({
+          phase: 'before-compose',
+          channel: 'chat',
+          sessionId,
+          textPreview: `history window dropped ${historyWindow.droppedCount} oldest message(s)`,
+        })
+      }
+
+      const newMessages = historyWindow.messages.map((msg) => {
         const { context: _context, id: _id, createdAt, ...withoutContext } = msg
         const rawMessage = toRaw(withoutContext)
         const ts = createdAt ?? nowTs
@@ -482,6 +508,29 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
                 }
 
                 break
+              case 'reasoning-delta':
+                // Reasoning counts as the model's first output for TTFT:
+                // reasoning models can think for tens of seconds before the
+                // first content token, and the turn is not "silent" anymore.
+                if (!llmFirstTokenEmitted) {
+                  llmFirstTokenEmitted = true
+                  llmSpan.addEvent(IOEvents.LLMFirstToken, {
+                    [IOAttributes.LLM_TTFT]: performance.now() - llmRequestTs,
+                  })
+                }
+                nativeReasoning += event.text
+                reasoningCharsSinceUiFlush += event.text.length
+                buildingMessage.categorization = {
+                  speech: buildingMessage.categorization?.speech ?? '',
+                  reasoning: nativeReasoning,
+                }
+                // Reasoning chunks arrive per-token; cloning the streaming
+                // message every chunk is wasteful, so flush in ~48-char steps.
+                if (reasoningCharsSinceUiFlush >= 48) {
+                  reasoningCharsSinceUiFlush = 0
+                  updateUI()
+                }
+                break
               case 'text-delta':
                 if (!llmFirstTokenEmitted) {
                   llmFirstTokenEmitted = true
@@ -509,8 +558,32 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
       await parser.end()
 
-      if (!isStaleGeneration() && buildingMessage.slices.length > 0) {
-        chatSession.appendSessionMessage(sessionId, toRaw(buildingMessage))
+      if (!isStaleGeneration()) {
+        if (buildingMessage.slices.length > 0) {
+          chatSession.appendSessionMessage(sessionId, toRaw(buildingMessage))
+        }
+        else if (nativeReasoning.trim() || buildingMessage.categorization?.reasoning?.trim()) {
+          // Reasoning-only turn: the model spent its entire output on
+          // reasoning and never produced reply content. Previously nothing
+          // was persisted (slices empty), so the turn vanished without a
+          // trace and looked like a hang. Keep the message (its reasoning is
+          // viewable in the collapsible section) plus a visible notice.
+          const notice = '(추론만 하고 응답 본문 없이 끝났어. 다시 한번 물어봐줘.)'
+          buildingMessage.content += notice
+          buildingMessage.slices.push({ type: 'text', text: notice })
+          chatSession.appendSessionMessage(sessionId, toRaw(buildingMessage))
+          updateUI()
+        }
+        else {
+          // Completely empty stream: surface a retriable error item instead
+          // of silently dropping the turn.
+          chatSession.appendSessionMessage(sessionId, {
+            role: 'error',
+            content: '모델이 빈 응답을 반환했어. 다시 시도해줘.',
+            createdAt: Date.now(),
+            id: nanoid(),
+          })
+        }
       }
 
       await hooks.emitStreamEndHooks(streamingMessageContext)

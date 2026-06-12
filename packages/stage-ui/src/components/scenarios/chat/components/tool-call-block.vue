@@ -88,6 +88,30 @@ const imageJournalResult = computed(() => {
   }
 })
 
+// Tool results can be a plain string or CommonContentPart[]; flatten to a
+// short readable line so the inline error hint never prints "[object Object]".
+const errorText = computed(() => {
+  if (props.state !== 'error' || props.result == null)
+    return ''
+
+  if (typeof props.result === 'string')
+    return props.result
+
+  if (Array.isArray(props.result)) {
+    return props.result
+      .map(part => (part && typeof part === 'object' && 'text' in part ? String(part.text) : ''))
+      .filter(Boolean)
+      .join(' ')
+  }
+
+  try {
+    return JSON.stringify(props.result)
+  }
+  catch {
+    return String(props.result)
+  }
+})
+
 const formattedArgs = computed(() => {
   try {
     const parsed = JSON.parse(props.args)
@@ -130,8 +154,8 @@ const formattedArgs = computed(() => {
           i-solar:sledgehammer-bold-duotone class="mr-1 inline-block translate-y-1 op-50"
         />
         <code>{{ toolName }}</code>
-        <span v-if="state === 'error' && result" class="ml-2 text-xs text-red-500 op-80">
-          ({{ result }})
+        <span v-if="errorText" class="ml-2 text-xs text-red-500 op-80">
+          ({{ errorText }})
         </span>
       </button>
     </template>

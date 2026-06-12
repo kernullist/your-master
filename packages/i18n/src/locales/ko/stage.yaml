@@ -7,6 +7,7 @@ chat:
       core-system: 코어
       you: 당신
   reasoning: 추론
+  thinking: 생각 중...
 message: 듣고 있어요...
 send-mode:
   title: Send key

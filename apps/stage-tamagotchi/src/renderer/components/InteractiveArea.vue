@@ -35,7 +35,11 @@ const airiCardStore = useAiriCardStore()
 const { messages } = storeToRefs(chatSession)
 const { streamingMessage } = storeToRefs(chatStream)
 const { sending } = storeToRefs(chatOrchestrator)
-const { activeCardId } = storeToRefs(airiCardStore)
+const { activeCardId, activeCard } = storeToRefs(airiCardStore)
+
+// Chat bubbles show the active character card's name; fall back to the i18n
+// default ("AIRI") inside ChatHistory when the card has no name.
+const assistantLabel = computed(() => activeCard.value?.name?.trim() || undefined)
 const { t } = useI18n()
 const { openImagePreview } = journalPreviewStore
 const isComposing = ref(false)
@@ -211,6 +215,7 @@ async function handleRetryMessage(index: number) {
         :messages="historyMessages"
         :sending="sending"
         :streaming-message="streamingMessage"
+        :assistant-label="assistantLabel"
         @delete-message="handleDeleteMessage($event.index)"
         @retry-message="handleRetryMessage($event.index)"
       />

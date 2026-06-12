@@ -141,6 +141,29 @@ vi.mock('./llm', () => ({
   }),
 }))
 
+// ROOT CAUSE:
+//
+// The orchestrator gained direct dependencies on `useAiriCardStore` and
+// `useAutonomousArtistryStore` (artistry autonomy hooks in performSend), but
+// this contract test never mocked them. Instantiating the real airi-card
+// store calls `useI18n()` at store-setup time, which throws
+// "Must be called at the top of a `setup` function" outside a component,
+// failing every test in this file.
+//
+// We fixed this by mocking both module stores with the minimal surface the
+// orchestrator touches (`activeCard` lookup and `runArtistTask`).
+vi.mock('./modules/airi-card', () => ({
+  useAiriCardStore: () => ({
+    activeCard: undefined,
+  }),
+}))
+
+vi.mock('./modules/artistry-autonomous', () => ({
+  useAutonomousArtistryStore: () => ({
+    runArtistTask: vi.fn(),
+  }),
+}))
+
 vi.mock('./modules/consciousness', () => ({
   useConsciousnessStore: () => ({
     activeProvider: ref('mock-provider'),
@@ -350,5 +373,78 @@ describe('chat orchestrator contract', () => {
       hidden: true,
     })
     expect(ensureSessionMock).toHaveBeenCalledWith('session-forked')
+  })
+
+  // ROOT CAUSE:
+  //
+  // Reasoning models (e.g. Qwen thinking variants on LM Studio) stream their
+  // output as `reasoning-delta` events (`delta.reasoning_content`) long
+  // before the first `text-delta`. The orchestrator's onStreamEvent switch
+  // had no case for them, so the UI stayed completely blank for the whole
+  // reasoning phase and the turn looked like a hang.
+  //
+  // We fixed this by accumulating reasoning deltas into
+  // `buildingMessage.categorization.reasoning` (rendered live by the
+  // collapsible reasoning section) and merging it with the tag-based
+  // categorization at finalize so it is not wiped.
+  it('streams native reasoning into categorization and keeps it after finalize', async () => {
+    getContextsSnapshotMock.mockReturnValue({})
+    llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
+      await options.onStreamEvent({ type: 'reasoning-delta', text: 'thinking hard about it ' })
+      await options.onStreamEvent({ type: 'reasoning-delta', text: 'and even harder now...' })
+      await options.onStreamEvent({ type: 'text-delta', text: 'hello!' })
+      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+    })
+
+    const store = useChatOrchestratorStore()
+    await store.ingest('hi', { model: 'gpt-test', chatProvider: provider })
+
+    const appended = sessionMessages['session-1'].at(-1)
+    expect(appended.role).toBe('assistant')
+    expect(appended.slices).toEqual([{ type: 'text', text: 'hello!' }])
+    expect(appended.categorization.speech).toBe('hello!')
+    expect(appended.categorization.reasoning).toBe('thinking hard about it and even harder now...')
+  })
+
+  // ROOT CAUSE:
+  //
+  // When a model spent its entire output on reasoning and produced no reply
+  // content, `buildingMessage.slices` stayed empty, the persist guard
+  // (`slices.length > 0`) skipped the append, and the whole turn vanished
+  // without a trace — indistinguishable from a hang for the user.
+  //
+  // We fixed this by persisting the reasoning-only message with a visible
+  // notice slice, and by appending a retriable error item when the stream
+  // was completely empty.
+  it('persists a reasoning-only turn with a visible notice instead of dropping it', async () => {
+    getContextsSnapshotMock.mockReturnValue({})
+    llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
+      await options.onStreamEvent({ type: 'reasoning-delta', text: 'pondering forever' })
+      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+    })
+
+    const store = useChatOrchestratorStore()
+    await store.ingest('hi', { model: 'gpt-test', chatProvider: provider })
+
+    const appended = sessionMessages['session-1'].at(-1)
+    expect(appended.role).toBe('assistant')
+    expect(appended.slices).toHaveLength(1)
+    expect(appended.slices[0].type).toBe('text')
+    expect(appended.slices[0].text).toContain('응답 본문 없이')
+    expect(appended.categorization.reasoning).toBe('pondering forever')
+  })
+
+  it('appends a retriable error item when the model returns an empty stream', async () => {
+    getContextsSnapshotMock.mockReturnValue({})
+    llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
+      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+    })
+
+    const store = useChatOrchestratorStore()
+    await store.ingest('hi', { model: 'gpt-test', chatProvider: provider })
+
+    const appended = sessionMessages['session-1'].at(-1)
+    expect(appended.role).toBe('error')
+    expect(appended.content).toContain('빈 응답')
   })
 })

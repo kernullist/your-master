@@ -3,6 +3,7 @@ import type { ChatAssistantMessage, ChatHistoryItem, ChatSlices, ChatSlicesText 
 
 import { isStageCapacitor, isStageWeb } from '@proj-airi/stage-shared'
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 
 import ChatResponsePart from './response-part.vue'
 import ChatToolCallBlock from './tool-call-block.vue'
@@ -15,9 +16,16 @@ const props = withDefaults(defineProps<{
   message: ChatAssistantMessage
   label: string
   showPlaceholder?: boolean
+  /**
+   * Whether this message is the one currently being streamed. Used to decide
+   * if a tool call without a matching result is still `executing` (streaming)
+   * or simply has no recorded result (finalized history).
+   */
+  streaming?: boolean
   variant?: 'desktop' | 'mobile'
 }>(), {
   showPlaceholder: false,
+  streaming: false,
   variant: 'desktop',
 })
 
@@ -25,6 +33,8 @@ const emit = defineEmits<{
   (e: 'copy'): void
   (e: 'delete'): void
 }>()
+
+const { t } = useI18n()
 
 const resolvedSlices = computed<ChatSlices[]>(() => {
   if (props.message.slices?.length) {
@@ -43,6 +53,30 @@ const resolvedSlices = computed<ChatSlices[]>(() => {
 
   return []
 })
+
+// Maps tool call ids to their recorded results so each tool-call slice can
+// render its lifecycle state (executing / done / error) and inline result.
+const toolResultById = computed(() => {
+  const map = new Map<string, { isError?: boolean, result?: unknown }>()
+  for (const toolResult of props.message.tool_results ?? []) {
+    map.set(toolResult.id, toolResult)
+  }
+  return map
+})
+
+function toolCallStateFor(toolCallId: string): 'executing' | 'done' | 'error' | undefined {
+  const toolResult = toolResultById.value.get(toolCallId)
+  if (toolResult)
+    return toolResult.isError ? 'error' : 'done'
+
+  // No result yet: only show the executing spinner while this message is
+  // actively streaming, otherwise leave the neutral icon for stale history.
+  return props.streaming ? 'executing' : undefined
+}
+
+function toolCallResultFor(toolCallId: string) {
+  return toolResultById.value.get(toolCallId)?.result
+}
 
 const showLoader = computed(() => props.showPlaceholder && resolvedSlices.value.length === 0)
 const containerClass = computed(() => props.variant === 'mobile' ? 'mr-0' : 'mr-12')
@@ -79,6 +113,8 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
                 v-if="slice.type === 'tool-call'"
                 :tool-name="slice.toolCall.toolName"
                 :args="slice.toolCall.args"
+                :state="toolCallStateFor(slice.toolCall.toolCallId)"
+                :result="toolCallResultFor(slice.toolCall.toolCallId)"
                 class="mb-2"
               />
               <template v-else-if="slice.type === 'tool-call-result'" />
@@ -87,7 +123,10 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
               </template>
             </template>
           </div>
-          <div v-else-if="showLoader" i-eos-icons:three-dots-loading />
+          <div v-else-if="showLoader" :class="['flex items-center gap-1.5', 'text-black/45 dark:text-white/50']">
+            <div i-eos-icons:three-dots-loading />
+            <span :class="['text-xs', 'animate-pulse']">{{ t('stage.chat.thinking') }}</span>
+          </div>
 
           <ChatResponsePart
             v-if="message.categorization"

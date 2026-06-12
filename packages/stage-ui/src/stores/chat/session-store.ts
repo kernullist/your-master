@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid'
 import { defineStore, storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
+import { CONVERSATIONAL_STYLE_PROMPT } from '../../constants/prompts/conversational-style'
 import { chatSessionsRepo } from '../../database/repos/chat-sessions.repo'
 import { useAuthStore } from '../auth'
 import { useAiriCardStore } from '../modules/airi-card'
@@ -79,7 +80,10 @@ export const useChatSessionStore = defineStore('chat-session', () => {
   }
 
   function generateInitialMessageFromPrompt(prompt: string) {
-    const content = codeBlockSystemPrompt + mathSyntaxSystemPrompt + prompt
+    // Style guidance goes after the character card so its conversational
+    // rules take precedence over generic verbosity habits, while the card
+    // still owns persona, lore, and emotion-token instructions.
+    const content = `${codeBlockSystemPrompt + mathSyntaxSystemPrompt + prompt}\n\n${CONVERSATIONAL_STYLE_PROMPT}`
 
     return {
       role: 'system',
@@ -295,6 +299,28 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     ensureGeneration(sessionId)
     if (!sessionMessages.value[sessionId] || sessionMessages.value[sessionId].length === 0) {
       replaceSessionMessages(sessionId, [generateInitialMessage()], { persist: false })
+      return
+    }
+
+    // Refresh a stale leading system message: the initial message is seeded
+    // once at session creation, so card edits (name, personality, prompt)
+    // previously never reached sessions that already had history — the
+    // character "forgot" whatever was just saved in the card editor until a
+    // brand-new session was started. Comparing against the freshly composed
+    // prompt keeps the message byte-stable (KV-cache friendly) unless the
+    // card actually changed. Runs on every send via the orchestrator's
+    // ensureSession call, so by then the active card is settled (no race
+    // with card switching).
+    const current = sessionMessages.value[sessionId]
+    const first = current[0]
+    if (first?.role === 'system' && typeof first.content === 'string') {
+      const expected = generateInitialMessage()
+      if (first.content !== expected.content) {
+        replaceSessionMessages(sessionId, [
+          { ...first, content: expected.content },
+          ...current.slice(1),
+        ])
+      }
     }
   }
 
