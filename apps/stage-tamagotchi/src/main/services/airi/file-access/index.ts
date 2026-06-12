@@ -18,6 +18,7 @@ import {
   electronFilesEdit,
   electronFilesList,
   electronFilesRead,
+  electronFilesSearch,
   electronFilesWrite,
 } from '../../../../shared/eventa'
 import {
@@ -30,6 +31,17 @@ import {
   validateRequestPath,
   writeBlockReason,
 } from './policy'
+import {
+  findContentMatches,
+  isSearchableTextFile,
+  matchesName,
+  SEARCH_MAX_DEPTH,
+  SEARCH_MAX_FILE_BYTES,
+  SEARCH_MAX_FILES_VISITED,
+  SEARCH_MAX_MATCHES,
+  shouldSkipDirectory,
+  validateSearchQuery,
+} from './search'
 
 /**
  * Local file access service: free reads/lists, user-approved writes.
@@ -236,5 +248,107 @@ export function createFileAccessService(params: {
 
     // The dialog shows a diff so the user sees exactly what changes.
     return confirmAndWrite(requestPath, edited.result, true, `Edit existing file:\n\n--- diff ---\n${buildLineDiff(current, edited.result)}`)
+  })
+
+  defineInvokeHandler(params.context, electronFilesSearch, async (payload) => {
+    const directory = payload?.directory ?? ''
+    const query = payload?.query ?? ''
+    const mode = payload?.mode === 'content' ? 'content' : 'name'
+
+    const invalidPath = validateRequestPath(directory)
+    if (invalidPath) {
+      return { error: invalidPath }
+    }
+    const invalidQuery = validateSearchQuery(query)
+    if (invalidQuery) {
+      return { error: invalidQuery }
+    }
+
+    try {
+      const info = await stat(directory)
+      if (!info.isDirectory()) {
+        return { error: `"${directory}" is not a directory` }
+      }
+    }
+    catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) }
+    }
+
+    const matches: { path: string, line?: number, text?: string }[] = []
+    let visited = 0
+    let truncated = false
+
+    // Iterative DFS with depth, visit-count, and match caps so a huge tree
+    // can never hang the call. Skips noise/huge directories (node_modules, .git...).
+    const stack: { dir: string, depth: number }[] = [{ dir: directory, depth: 0 }]
+    while (stack.length > 0) {
+      const { dir, depth } = stack.pop()!
+      if (matches.length >= SEARCH_MAX_MATCHES || visited >= SEARCH_MAX_FILES_VISITED) {
+        truncated = true
+        break
+      }
+
+      let dirents
+      try {
+        dirents = await readdir(dir, { withFileTypes: true })
+      }
+      catch {
+        // Unreadable dir (permissions) — skip it rather than failing the search.
+        continue
+      }
+
+      for (const dirent of dirents) {
+        if (matches.length >= SEARCH_MAX_MATCHES) {
+          truncated = true
+          break
+        }
+
+        const fullPath = join(dir, dirent.name)
+        if (dirent.isDirectory()) {
+          if (depth < SEARCH_MAX_DEPTH && !shouldSkipDirectory(dirent.name)) {
+            stack.push({ dir: fullPath, depth: depth + 1 })
+          }
+          continue
+        }
+
+        if (!dirent.isFile()) {
+          continue
+        }
+
+        visited += 1
+        if (visited >= SEARCH_MAX_FILES_VISITED) {
+          truncated = true
+          break
+        }
+
+        if (mode === 'name') {
+          if (matchesName(dirent.name, query)) {
+            matches.push({ path: fullPath })
+          }
+          continue
+        }
+
+        // Content mode: only read plausibly-text files under the size cap.
+        if (!isSearchableTextFile(dirent.name)) {
+          continue
+        }
+        try {
+          const fileInfo = await stat(fullPath)
+          if (fileInfo.size > SEARCH_MAX_FILE_BYTES) {
+            continue
+          }
+          const content = await readFile(fullPath, 'utf-8')
+          const remaining = SEARCH_MAX_MATCHES - matches.length
+          for (const hit of findContentMatches(content, query, remaining)) {
+            matches.push({ path: fullPath, line: hit.line, text: hit.text })
+          }
+        }
+        catch {
+          // Unreadable/binary file — skip.
+        }
+      }
+    }
+
+    return { matches, truncated }
   })
 }

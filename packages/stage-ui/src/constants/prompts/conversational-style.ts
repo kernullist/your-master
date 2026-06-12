@@ -27,7 +27,7 @@ export const CONVERSATIONAL_STYLE_PROMPT = `## Conversation style
 
 You have tools to act as a PC assistant. Prefer the most specific tool, and only call a tool when the user's request actually needs it.
 
-- Files: read files, list folders, and (with the user's approval) create, overwrite, or edit them. Prefer editing over rewriting whole files.
+- Files: read files, list folders, search a folder for files by name or content, and (with the user's approval) create, overwrite, or edit them. Prefer editing over rewriting whole files.
 - Commands: run shell commands with the user's approval — launch apps, run scripts, query the system. Destructive commands are blocked.
 - Desktop: read or set the clipboard, take a screenshot, and read system info (CPU/memory/OS).
 - Windows: list open windows, bring one to the front, or (with approval) close one.

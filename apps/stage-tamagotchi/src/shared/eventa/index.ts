@@ -342,6 +342,25 @@ export const electronFilesList = defineInvokeEventa<ElectronFileListResult, { pa
 export const electronFilesWrite = defineInvokeEventa<ElectronFileWriteResult, { path: string, content: string }>('eventa:invoke:electron:files:write')
 export const electronFilesEdit = defineInvokeEventa<ElectronFileWriteResult, { path: string, oldString: string, newString: string }>('eventa:invoke:electron:files:edit')
 
+/** A single file-search hit. */
+export interface ElectronFileSearchMatch {
+  /** Absolute path of the matching file. */
+  path: string
+  /** 1-based line number, for content matches only. */
+  line?: number
+  /** The matching line text (trimmed/capped), for content matches only. */
+  text?: string
+}
+
+export interface ElectronFileSearchResult {
+  matches?: ElectronFileSearchMatch[]
+  error?: string
+  /** True when the search was cut short at a cap (more matches/files exist). */
+  truncated?: boolean
+}
+
+export const electronFilesSearch = defineInvokeEventa<ElectronFileSearchResult, { directory: string, query: string, mode?: 'name' | 'content' }>('eventa:invoke:electron:files:search')
+
 export const electronMcpOpenConfigFile = defineInvokeEventa<{ path: string }>('eventa:invoke:electron:mcp:open-config-file')
 export const electronMcpApplyAndRestart = defineInvokeEventa<ElectronMcpStdioApplyResult>('eventa:invoke:electron:mcp:apply-and-restart')
 export const electronMcpGetRuntimeStatus = defineInvokeEventa<ElectronMcpStdioRuntimeStatus>('eventa:invoke:electron:mcp:get-runtime-status')

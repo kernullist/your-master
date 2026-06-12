@@ -5,7 +5,7 @@ import { createContext } from '@moeru/eventa/adapters/electron/renderer'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
 
-import { electronFilesEdit, electronFilesList, electronFilesRead, electronFilesWrite } from '../../../../shared/eventa'
+import { electronFilesEdit, electronFilesList, electronFilesRead, electronFilesSearch, electronFilesWrite } from '../../../../shared/eventa'
 
 function createInvokers() {
   const { context } = createContext(window.electron.ipcRenderer)
@@ -14,6 +14,7 @@ function createInvokers() {
     listDirectory: defineInvoke(context, electronFilesList),
     writeFile: defineInvoke(context, electronFilesWrite),
     editFile: defineInvoke(context, electronFilesEdit),
+    searchFiles: defineInvoke(context, electronFilesSearch),
   }
 }
 
@@ -66,6 +67,22 @@ const tools: Promise<Tool>[] = [
     parameters: z.object({
       path: z.string().describe('Absolute path of the file to create or overwrite'),
       content: z.string().describe('Full new file content (UTF-8). For small changes to an existing file, use file_edit instead.'),
+    }),
+  }),
+  tool({
+    name: 'search_files',
+    description: 'Search a folder (recursively) for files by name or by text content. Use to answer "where is my ... file?" or "which file mentions ...". mode "name" matches the filename; mode "content" searches inside text files and returns matching lines. Read-only.',
+    execute: async ({ directory, query, mode }) => {
+      const result = await getInvokers().searchFiles({ directory, query, mode })
+      if (result.error) {
+        return `Error: ${result.error}`
+      }
+      return JSON.stringify({ matches: result.matches ?? [], truncated: result.truncated ?? false })
+    },
+    parameters: z.object({
+      directory: z.string().describe('Absolute path of the folder to search under, e.g. C:\\Users\\me\\Documents'),
+      query: z.string().describe('Text to look for (in filenames, or in file contents for content mode)'),
+      mode: z.enum(['name', 'content']).optional().describe('"name" (default) matches filenames; "content" searches inside text files'),
     }),
   }),
   tool({

@@ -10,6 +10,7 @@ reads are free.
 |---|---|---|---|
 | `file_read` | Read a text file by absolute path (512KB cap, binary rejected) | none | `main/services/airi/file-access` |
 | `file_list` | List a directory (name/type/size, 300 cap) | none | `file-access` |
+| `search_files` | Recursively search a folder by filename or text content | none | `file-access` |
 | `file_write` | Create/overwrite a text file with full content (keeps `.airi-bak`) | **dialog** | `file-access` |
 | `file_edit` | Replace an exact unique string in a file; dialog shows a diff (keeps `.airi-bak`) | **dialog (diff)** | `file-access` |
 | `run_command` | Run a shell command via cmd.exe (30s timeout, output capped) | **dialog** | `command-exec` |
@@ -44,6 +45,8 @@ What the user can say in chat to trigger each tool:
 |---|---|
 | "F:\notes\todo.md 읽고 요약해줘" | `file_read` |
 | "바탕화면에 뭐 있어?" | `file_list` |
+| "문서 폴더에서 계약서 파일 찾아줘" | `search_files` (name) |
+| "어느 파일에 'API_KEY'가 들어있어?" | `search_files` (content) |
 | "메모.txt 만들고 회의 내용 적어줘" | `file_write` → approval dialog |
 | "config.json에서 port를 8080으로 바꿔줘" | `file_edit` → approval dialog with diff |
 | "메모장 열어줘" / "npm run build 실행해줘" | `run_command` → approval dialog |
@@ -118,6 +121,9 @@ willingness to act. Keep it concise and update it when capability areas change
   keyboard injection are intentionally not implemented — they need native
   modules (nut.js/robotjs) and carry a high misfire risk. The
   `@proj-airi/computer-use-mcp` service is macOS-only and does not apply here.
+- `search_files` is keyword/substring search (filename + text content), not
+  semantic RAG: no embeddings or index, so it is always current but matches
+  literal text only. Semantic document search is a possible future step.
 
 > When adding a new assistant tool, update this file in the same change:
 > add a row to the tools table, a chat usage example, and note any approval
