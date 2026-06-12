@@ -10,7 +10,8 @@ reads are free.
 |---|---|---|---|
 | `file_read` | Read a text file by absolute path (512KB cap, binary rejected) | none | `main/services/airi/file-access` |
 | `file_list` | List a directory (name/type/size, 300 cap) | none | `file-access` |
-| `file_write` | Create/overwrite a text file (keeps `.airi-bak`) | **dialog** | `file-access` |
+| `file_write` | Create/overwrite a text file with full content (keeps `.airi-bak`) | **dialog** | `file-access` |
+| `file_edit` | Replace an exact unique string in a file; dialog shows a diff (keeps `.airi-bak`) | **dialog (diff)** | `file-access` |
 | `run_command` | Run a shell command via cmd.exe (30s timeout, output capped) | **dialog** | `command-exec` |
 | `clipboard_read` | Read clipboard text (16KB cap) | none | `desktop-io` |
 | `clipboard_write` | Replace clipboard text | none | `desktop-io` |
@@ -37,6 +38,7 @@ What the user can say in chat to trigger each tool:
 | "F:\notes\todo.md 읽고 요약해줘" | `file_read` |
 | "바탕화면에 뭐 있어?" | `file_list` |
 | "메모.txt 만들고 회의 내용 적어줘" | `file_write` → approval dialog |
+| "config.json에서 port를 8080으로 바꿔줘" | `file_edit` → approval dialog with diff |
 | "메모장 열어줘" / "npm run build 실행해줘" | `run_command` → approval dialog |
 | "방금 복사한 거 정리해줘" | `clipboard_read` |
 | "이 결과 클립보드에 넣어줘" | `clipboard_write` |
@@ -79,8 +81,10 @@ conversational-style prompt instructs the model accordingly).
 
 ### Known limitations
 
-- `run_command` and `file_write` replace whole content / run single commands;
-  no diff preview or partial edit yet.
+- `run_command` runs single commands with no transactional rollback.
+- `file_edit` replaces one exact unique string per call (no fuzzy/multi-edit);
+  `file_write` replaces whole content. Both show an approval dialog —
+  `file_edit`'s shows a line diff.
 - `screenshot` returns a file path, not an inline image — wiring tool-result
   images into the next LLM turn (vision) is a separate, provider-dependent
   feature and is not implemented.

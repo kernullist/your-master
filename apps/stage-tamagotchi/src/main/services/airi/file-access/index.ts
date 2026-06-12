@@ -15,11 +15,14 @@ import { defineInvokeHandler } from '@moeru/eventa'
 import { BrowserWindow, dialog } from 'electron'
 
 import {
+  electronFilesEdit,
   electronFilesList,
   electronFilesRead,
   electronFilesWrite,
 } from '../../../../shared/eventa'
 import {
+  applyStringEdit,
+  buildLineDiff,
   buildWritePreview,
   FILE_LIST_MAX_ENTRIES,
   FILE_READ_MAX_BYTES,
@@ -109,6 +112,51 @@ export function createFileAccessService(params: {
     }
   })
 
+  // Shared approval + backup + write path for both full writes and edits.
+  // `detail` is the dialog body (content preview or diff). Returns the tool
+  // result; nothing is written unless the user explicitly approves.
+  async function confirmAndWrite(requestPath: string, nextContent: string, exists: boolean, detail: string): Promise<ElectronFileWriteResult> {
+    const parent = BrowserWindow.getFocusedWindow() ?? undefined
+    const dialogOptions = {
+      type: 'warning' as const,
+      title: 'AIRI file modification request',
+      message: `AIRI wants to modify a file:\n${requestPath}`,
+      detail,
+      buttons: ['Deny', 'Approve'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }
+    const choice = parent
+      ? await dialog.showMessageBox(parent, dialogOptions)
+      : await dialog.showMessageBox(dialogOptions)
+
+    if (choice.response !== 1) {
+      log.withFields({ path: requestPath }).log('file write denied by user')
+      return { ok: false, message: 'user denied the modification' }
+    }
+
+    try {
+      // Keep a one-shot backup of the previous content so a mistaken
+      // approval is recoverable without version control.
+      if (exists) {
+        await writeFile(`${requestPath}.airi-bak`, await readFile(requestPath))
+      }
+
+      await writeFile(requestPath, nextContent, 'utf-8')
+      log.withFields({ path: requestPath, bytes: Buffer.byteLength(nextContent, 'utf-8') }).log('file write approved and applied')
+      return {
+        ok: true,
+        message: exists
+          ? `file updated (backup saved as ${requestPath}.airi-bak)`
+          : 'file created',
+      }
+    }
+    catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
   defineInvokeHandler(params.context, electronFilesWrite, async (payload): Promise<ElectronFileWriteResult> => {
     const requestPath = payload?.path ?? ''
     const content = payload?.content ?? ''
@@ -143,53 +191,50 @@ export function createFileAccessService(params: {
       }
     }
 
-    // The approval gate: nothing is written unless the user explicitly
-    // clicks approve. Default/cancel both map to deny.
     const summary = exists
       ? `Overwrite existing file (${previousSize} bytes -> ${Buffer.byteLength(content, 'utf-8')} bytes)`
       : `Create new file (${Buffer.byteLength(content, 'utf-8')} bytes)`
 
-    // Parents to the focused window (no window bound to this single global
-    // context); falls back to a parent-less modal.
-    const parent = BrowserWindow.getFocusedWindow() ?? undefined
-    const dialogOptions = {
-      type: 'warning' as const,
-      title: 'AIRI file modification request',
-      message: `AIRI wants to modify a file:\n${requestPath}`,
-      detail: `${summary}\n\n--- content preview ---\n${buildWritePreview(content)}`,
-      buttons: ['Deny', 'Approve'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-    }
-    const choice = parent
-      ? await dialog.showMessageBox(parent, dialogOptions)
-      : await dialog.showMessageBox(dialogOptions)
+    return confirmAndWrite(requestPath, content, exists, `${summary}\n\n--- content preview ---\n${buildWritePreview(content)}`)
+  })
 
-    if (choice.response !== 1) {
-      log.withFields({ path: requestPath }).log('file write denied by user')
-      return { ok: false, message: 'user denied the modification' }
+  defineInvokeHandler(params.context, electronFilesEdit, async (payload): Promise<ElectronFileWriteResult> => {
+    const requestPath = payload?.path ?? ''
+    const oldString = payload?.oldString ?? ''
+    const newString = payload?.newString ?? ''
+
+    const invalid = validateRequestPath(requestPath)
+    if (invalid) {
+      return { ok: false, message: invalid }
     }
 
+    const blocked = writeBlockReason(requestPath)
+    if (blocked) {
+      return { ok: false, message: blocked }
+    }
+
+    let current: string
     try {
-      // Keep a one-shot backup of the previous content so a mistaken
-      // approval is recoverable without version control.
-      if (exists) {
-        const backupPath = `${requestPath}.airi-bak`
-        await writeFile(backupPath, await readFile(requestPath))
+      const info = await stat(requestPath)
+      if (info.isDirectory()) {
+        return { ok: false, message: `"${requestPath}" is a directory` }
       }
-
-      await writeFile(requestPath, content, 'utf-8')
-      log.withFields({ path: requestPath, bytes: Buffer.byteLength(content, 'utf-8') }).log('file write approved and applied')
-      return {
-        ok: true,
-        message: exists
-          ? `file updated (backup saved as ${requestPath}.airi-bak)`
-          : 'file created',
+      const buffer = await readFile(requestPath)
+      if (isProbablyBinary(buffer)) {
+        return { ok: false, message: `"${requestPath}" looks like a binary file and cannot be edited as text` }
       }
+      current = buffer.toString('utf-8')
     }
     catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+      return { ok: false, message: `cannot edit: ${error instanceof Error ? error.message : String(error)}` }
     }
+
+    const edited = applyStringEdit(current, oldString, newString)
+    if (!edited.ok || edited.result == null) {
+      return { ok: false, message: edited.error ?? 'edit failed' }
+    }
+
+    // The dialog shows a diff so the user sees exactly what changes.
+    return confirmAndWrite(requestPath, edited.result, true, `Edit existing file:\n\n--- diff ---\n${buildLineDiff(current, edited.result)}`)
   })
 }

@@ -120,3 +120,113 @@ export function buildWritePreview(content: string): string {
 
   return `${content.slice(0, WRITE_PREVIEW_MAX_CHARS)}\n... (${content.length - WRITE_PREVIEW_MAX_CHARS} more characters)`
 }
+
+/** Max diff lines shown in the approval dialog before truncation. */
+export const DIFF_PREVIEW_MAX_LINES = 60
+
+/** Outcome of {@link applyStringEdit}. */
+export interface StringEditResult {
+  ok: boolean
+  result?: string
+  error?: string
+}
+
+/**
+ * Applies a single exact-match string replacement, requiring the target to be
+ * unique (same contract as a typical code-edit tool).
+ *
+ * Use when:
+ * - Performing a partial file edit without rewriting the whole file.
+ *
+ * Expects:
+ * - `oldString` non-empty and appearing exactly once in `content`;
+ *   `newString` may be empty (deletion).
+ *
+ * Returns:
+ * - `{ ok: true, result }` with the replaced content, or `{ ok: false, error }`
+ *   when the target is empty, missing, or ambiguous.
+ */
+export function applyStringEdit(content: string, oldString: string, newString: string): StringEditResult {
+  if (oldString === '') {
+    return { ok: false, error: 'oldString is empty; use file_write to create or fully replace a file' }
+  }
+
+  if (oldString === newString) {
+    return { ok: false, error: 'oldString and newString are identical; nothing to change' }
+  }
+
+  const firstIndex = content.indexOf(oldString)
+  if (firstIndex === -1) {
+    return { ok: false, error: 'oldString was not found in the file' }
+  }
+
+  const lastIndex = content.lastIndexOf(oldString)
+  if (firstIndex !== lastIndex) {
+    return { ok: false, error: 'oldString matches multiple locations; include more surrounding context to make it unique' }
+  }
+
+  return { ok: true, result: `${content.slice(0, firstIndex)}${newString}${content.slice(firstIndex + oldString.length)}` }
+}
+
+/**
+ * Builds a compact line-level diff for an approval dialog.
+ *
+ * Before:
+ * - before = "a\nb\nc", after = "a\nB\nc"
+ *
+ * After:
+ * - "  a\n- b\n+ B\n  c"
+ *
+ * Uses an LCS over lines so unchanged lines are shown as context and changed
+ * regions as `-`/`+`. Output is capped at {@link DIFF_PREVIEW_MAX_LINES}.
+ */
+export function buildLineDiff(before: string, after: string): string {
+  const beforeLines = before.split('\n')
+  const afterLines = after.split('\n')
+  const rows = beforeLines.length
+  const cols = afterLines.length
+
+  // LCS length table.
+  const lcs: number[][] = Array.from({ length: rows + 1 }, () => Array.from<number>({ length: cols + 1 }).fill(0))
+  for (let i = rows - 1; i >= 0; i -= 1) {
+    for (let j = cols - 1; j >= 0; j -= 1) {
+      lcs[i][j] = beforeLines[i] === afterLines[j]
+        ? lcs[i + 1][j + 1] + 1
+        : Math.max(lcs[i + 1][j], lcs[i][j + 1])
+    }
+  }
+
+  const out: string[] = []
+  let i = 0
+  let j = 0
+  while (i < rows && j < cols) {
+    if (beforeLines[i] === afterLines[j]) {
+      out.push(`  ${beforeLines[i]}`)
+      i += 1
+      j += 1
+    }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.push(`- ${beforeLines[i]}`)
+      i += 1
+    }
+    else {
+      out.push(`+ ${afterLines[j]}`)
+      j += 1
+    }
+  }
+  while (i < rows) {
+    out.push(`- ${beforeLines[i]}`)
+    i += 1
+  }
+  while (j < cols) {
+    out.push(`+ ${afterLines[j]}`)
+    j += 1
+  }
+
+  if (out.length > DIFF_PREVIEW_MAX_LINES) {
+    const shown = out.slice(0, DIFF_PREVIEW_MAX_LINES)
+    return `${shown.join('\n')}\n... (${out.length - DIFF_PREVIEW_MAX_LINES} more diff lines)`
+  }
+
+  return out.join('\n')
+}

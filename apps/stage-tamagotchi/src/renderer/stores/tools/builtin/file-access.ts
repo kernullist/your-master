@@ -5,7 +5,7 @@ import { createContext } from '@moeru/eventa/adapters/electron/renderer'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
 
-import { electronFilesList, electronFilesRead, electronFilesWrite } from '../../../../shared/eventa'
+import { electronFilesEdit, electronFilesList, electronFilesRead, electronFilesWrite } from '../../../../shared/eventa'
 
 function createInvokers() {
   const { context } = createContext(window.electron.ipcRenderer)
@@ -13,6 +13,7 @@ function createInvokers() {
     readFile: defineInvoke(context, electronFilesRead),
     listDirectory: defineInvoke(context, electronFilesList),
     writeFile: defineInvoke(context, electronFilesWrite),
+    editFile: defineInvoke(context, electronFilesEdit),
   }
 }
 
@@ -57,14 +58,27 @@ const tools: Promise<Tool>[] = [
   }),
   tool({
     name: 'file_write',
-    description: 'Create or overwrite a text file on the user\'s computer. THE USER MUST APPROVE EVERY WRITE in a system dialog and may deny it — if denied, accept the decision and do not retry. Overwrites keep a .airi-bak backup.',
+    description: 'Create or overwrite a text file on the user\'s computer with full content. Prefer file_edit for small changes to an existing file. THE USER MUST APPROVE EVERY WRITE in a system dialog and may deny it — if denied, accept the decision and do not retry. Overwrites keep a .airi-bak backup.',
     execute: async ({ path, content }) => {
       const result = await getInvokers().writeFile({ path, content })
       return result.ok ? `OK: ${result.message}` : `Rejected: ${result.message}`
     },
     parameters: z.object({
       path: z.string().describe('Absolute path of the file to create or overwrite'),
-      content: z.string().describe('Full new file content (UTF-8). Partial edits are not supported; provide the complete file.'),
+      content: z.string().describe('Full new file content (UTF-8). For small changes to an existing file, use file_edit instead.'),
+    }),
+  }),
+  tool({
+    name: 'file_edit',
+    description: 'Make a partial edit to an existing text file by replacing an exact unique string. THE USER MUST APPROVE the change in a system dialog showing a diff, and may deny it — if denied, accept the decision and do not retry. oldString must appear exactly once; include surrounding context to make it unique. Keeps a .airi-bak backup.',
+    execute: async ({ path, oldString, newString }) => {
+      const result = await getInvokers().editFile({ path, oldString, newString })
+      return result.ok ? `OK: ${result.message}` : `Rejected: ${result.message}`
+    },
+    parameters: z.object({
+      path: z.string().describe('Absolute path of the file to edit'),
+      oldString: z.string().describe('The exact existing text to replace (must be unique in the file)'),
+      newString: z.string().describe('The replacement text (may be empty to delete the matched text)'),
     }),
   }),
 ]
