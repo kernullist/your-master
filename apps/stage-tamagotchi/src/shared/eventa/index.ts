@@ -295,6 +295,8 @@ export interface ElectronScreenshotResult {
 
 export const electronScreenshotCapture = defineInvokeEventa<ElectronScreenshotResult, void>('eventa:invoke:electron:screenshot:capture')
 
+export const electronNotify = defineInvokeEventa<{ ok: boolean }, { title: string, body: string }>('eventa:invoke:electron:notify')
+
 export const electronFilesRead = defineInvokeEventa<ElectronFileReadResult, { path: string }>('eventa:invoke:electron:files:read')
 export const electronFilesList = defineInvokeEventa<ElectronFileListResult, { path: string }>('eventa:invoke:electron:files:list')
 export const electronFilesWrite = defineInvokeEventa<ElectronFileWriteResult, { path: string, content: string }>('eventa:invoke:electron:files:write')

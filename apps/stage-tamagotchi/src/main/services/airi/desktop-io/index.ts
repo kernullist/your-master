@@ -7,11 +7,12 @@ import { join } from 'node:path'
 
 import { useLogg } from '@guiiai/logg'
 import { defineInvokeHandler } from '@moeru/eventa'
-import { app, clipboard, desktopCapturer, screen } from 'electron'
+import { app, clipboard, desktopCapturer, Notification, screen } from 'electron'
 
 import {
   electronClipboardRead,
   electronClipboardWrite,
+  electronNotify,
   electronScreenshotCapture,
 } from '../../../../shared/eventa'
 
@@ -34,6 +35,15 @@ export function createDesktopIoService(params: {
   context: ReturnType<typeof createContext>['context']
 }) {
   const log = useLogg('main/desktop-io').useGlobalConfig()
+
+  defineInvokeHandler(params.context, electronNotify, async (payload) => {
+    if (!Notification.isSupported()) {
+      return { ok: false }
+    }
+
+    new Notification({ title: payload?.title ?? 'AIRI', body: payload?.body ?? '' }).show()
+    return { ok: true }
+  })
 
   defineInvokeHandler(params.context, electronClipboardRead, async () => {
     const text = clipboard.readText() ?? ''

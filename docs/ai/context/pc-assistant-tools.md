@@ -18,6 +18,9 @@ reads are free.
 | `remember` | Save a durable fact about the user (per character) | none | `stage-ui` memory store |
 | `recall_memories` | List remembered facts for the active character | none | `stage-ui` memory store |
 | `forget` | Delete a remembered fact by id | none | `stage-ui` memory store |
+| `set_reminder` | Schedule a reminder; fires as a proactive chat message + OS notification | none | `renderer` reminders store |
+| `list_reminders` | List pending reminders with ids and fire times | none | `renderer` reminders store |
+| `cancel_reminder` | Cancel a pending reminder by id | none | `renderer` reminders store |
 
 Tools are registered into the `widgets` and `artistry` toolsets in
 `renderer/stores/chat-sync.ts`. OS-privileged services (file/command/desktop)
@@ -41,6 +44,18 @@ What the user can say in chat to trigger each tool:
 | "내 이름은 꿀보야, 기억해" | `remember` |
 | "나에 대해 뭘 알고 있어?" | `recall_memories` |
 | "그 사실은 잊어줘" | `forget` |
+| "30분 뒤에 스트레칭하라고 알려줘" | `set_reminder` |
+| "예약된 알림 뭐 있어?" | `list_reminders` |
+| "그 알림 취소해줘" | `cancel_reminder` |
+
+### Reminders
+
+`set_reminder`/`list_reminders`/`cancel_reminder` schedule timers in the
+renderer (`stores/reminders.ts`), persisted to localStorage so they survive
+reloads — `initialize()` re-arms them at startup and past-due ones fire shortly
+after. On fire, AIRI appends a proactive assistant message to the active chat
+session and shows an OS notification via the main process
+(`electronNotify` → `desktop-io`). Max delay ~30 days.
 
 ### Long-term memory
 

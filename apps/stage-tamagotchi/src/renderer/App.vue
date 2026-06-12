@@ -52,6 +52,7 @@ import { initializeElectronAuthCallbackBridge } from './bridges/electron-auth-ca
 import { initializeStageThreeRuntimeTraceBridge } from './bridges/stage-three-runtime-trace'
 import { useTamagotchiMcpToolsStore } from './stores/mcp-tools'
 import { useTamagotchiPluginToolsStore } from './stores/plugin-tools'
+import { useRemindersStore } from './stores/reminders'
 import { useServerChannelSettingsStore } from './stores/settings/server-channel'
 import { useStageWindowLifecycleStore } from './stores/stage-window-lifecycle'
 
@@ -155,6 +156,10 @@ void mcpToolsStore.refresh().catch((error) => {
   console.warn('[App] Failed to refresh MCP runtime tools:', error)
 })
 void refreshPluginRuntimeTools()
+
+// Re-arm reminders persisted from a previous run so they still fire (past-due
+// ones fire shortly after startup). See stores/reminders.ts.
+useRemindersStore().initialize()
 
 watch(language, () => {
   i18n.locale.value = language.value || 'en'
