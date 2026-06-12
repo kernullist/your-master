@@ -10,6 +10,7 @@ import { rawTool } from '@xsai/tool'
 import { widgetsAdd, widgetsClear, widgetsOpenWindow, widgetsPrepareWindow, widgetsRemove, widgetsUpdate } from '../../../../shared/eventa'
 import { normalizeWidgetWindowSize } from '../../../../shared/utils/electron/windows/window-size'
 import { sanitizeExtensionUiDispatchProps } from '../../../widgets/extension-ui/host'
+import { getArtistryConfig, isArtistryBackendReachable } from './image-journal'
 
 type SizePreset = 's' | 'm' | 'l'
 
@@ -207,14 +208,44 @@ function sanitizeComponentPropsForDispatch(componentName: string | undefined, co
   return sanitizeExtensionUiDispatchProps(componentProps)
 }
 
-export async function executeWidgetAction(input: WidgetActionInput, deps?: { invokers?: WidgetInvokers }) {
+export async function executeWidgetAction(
+  input: WidgetActionInput,
+  deps?: {
+    invokers?: WidgetInvokers
+    /**
+     * Liveness check for the artistry image backend; injectable for tests.
+     * @default isArtistryBackendReachable(getArtistryConfig())
+     */
+    artistryBackendReachable?: () => Promise<boolean>
+  },
+) {
   const invokers = resolveInvokers(deps?.invokers)
   const normalizedId = input.id?.trim() || undefined
+
+  // Artistry widgets render a canvas that waits for a ComfyUI generation;
+  // with the backend offline that canvas stays black forever. Refuse the
+  // spawn/update with an instructive message (returned to the LLM as the
+  // tool result) instead of leaving a dead widget on screen.
+  const ensureArtistryBackend = async (componentName?: string) => {
+    if (componentName?.trim().toLowerCase() !== 'artistry')
+      return undefined
+
+    const reachable = await (deps?.artistryBackendReachable
+      ?? (() => isArtistryBackendReachable(getArtistryConfig())))()
+    if (reachable)
+      return undefined
+
+    return 'Cannot use the artistry widget: the image generation backend is offline. Do not retry and do not spawn image widgets; answer the user in plain text instead.'
+  }
 
   switch (input.action) {
     case 'spawn': {
       if (!input.componentName?.trim())
         throw new Error('componentName is required to spawn a widget.')
+
+      const backendNotice = await ensureArtistryBackend(input.componentName)
+      if (backendNotice)
+        return backendNotice
 
       const componentProps = normalizeComponentProps(input.componentProps)
       const sanitizedComponentProps = sanitizeComponentPropsForDispatch(input.componentName, componentProps)
@@ -234,6 +265,10 @@ export async function executeWidgetAction(input: WidgetActionInput, deps?: { inv
     case 'update': {
       if (!normalizedId)
         throw new Error('id is required to update a widget.')
+
+      const backendNotice = await ensureArtistryBackend(input.componentName)
+      if (backendNotice)
+        return backendNotice
 
       const componentProps = normalizeComponentProps(input.componentProps)
       const sanitizedComponentProps = sanitizeComponentPropsForDispatch(input.componentName, componentProps)

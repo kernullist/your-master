@@ -1,6 +1,6 @@
 import { useElectronEventaInvoke } from '@proj-airi/electron-vueuse'
 import { useLlmToolsStore } from '@proj-airi/stage-ui/stores/llm-tools'
-import { createMcpTools } from '@proj-airi/stage-ui/tools/mcp'
+import { createFlattenedMcpTools, createMcpTools } from '@proj-airi/stage-ui/tools/mcp'
 import { defineStore } from 'pinia'
 
 import { electronMcpCallTool, electronMcpListTools } from '../../shared/eventa'
@@ -23,10 +23,26 @@ export const useTamagotchiMcpToolsStore = defineStore('tamagotchi-mcp-tools', ()
   const callMcpTool = useElectronEventaInvoke(electronMcpCallTool)
 
   async function refresh() {
-    return llmToolsStore.registerTools('mcp', Promise.all(createMcpTools({
+    const runtime = {
       listTools: () => listMcpTools(),
-      callTool: payload => callMcpTool(payload),
-    })))
+      callTool: (payload: Parameters<typeof callMcpTool>[0]) => callMcpTool(payload),
+    }
+
+    // Flattened tools expose each MCP tool (name/description/schema) directly
+    // in the model's tool list — weak local models rarely manage the generic
+    // two-hop list-then-call flow. The proxy pair stays registered as a
+    // fallback for servers added after this refresh.
+    // TODO: re-run refresh() when MCP apply-and-restart broadcasts a change
+    // event, so newly started servers flatten without an app reload.
+    const registration = (async () => {
+      const [proxyTools, flattenedTools] = await Promise.all([
+        Promise.all(createMcpTools(runtime)),
+        createFlattenedMcpTools(runtime),
+      ])
+      return [...proxyTools, ...flattenedTools]
+    })()
+
+    return llmToolsStore.registerTools('mcp', registration)
   }
 
   function dispose() {

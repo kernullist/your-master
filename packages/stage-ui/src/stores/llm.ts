@@ -59,12 +59,21 @@ export const useLLM = defineStore('llm', () => {
         builtinToolsResolver: async () => {
           await llmToolsStore.awaitPendingRegistrations()
 
-          // Reverse twice so later runtime registrations win while original tool order stays stable.
+          // ROOT CAUSE:
+          //
+          // `llmToolsStore.activeTools` (runtime-registered tools: the live
+          // Electron MCP runtime, plugin tools, flattened MCP tools) was not
+          // merged here even though registrations were awaited above — so
+          // every registered tool silently never reached the model, and the
+          // placeholder mcp() proxies (unavailable runtime) shadowed the real
+          // ones. Restored the merge; registered tools come last so uniqBy on
+          // the reversed list lets them win over same-named placeholders.
           return uniqBy(
             [
               ...await mcp(),
               ...await debug(),
               ...await createSparkCommandTool({ sendSparkCommand }),
+              ...llmToolsStore.activeTools,
             ].toReversed(),
             tool => toolNameFrom(tool) ?? tool,
           ).toReversed()

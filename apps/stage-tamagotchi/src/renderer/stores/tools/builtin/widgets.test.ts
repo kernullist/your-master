@@ -350,6 +350,86 @@ describe('widgets tool helpers', () => {
       })
     })
 
+    // ROOT CAUSE:
+    //
+    // The model could spawn an `artistry` widget (status: "generating") while
+    // the ComfyUI backend was offline. The widget waited for a generation
+    // that could never start and stayed as a black, empty window on screen.
+    // The image_journal tool was already health-gated, but this direct
+    // stage_widgets spawn path was not.
+    //
+    // We fixed this by refusing artistry spawn/update when the backend probe
+    // fails, returning an instructive message the LLM can act on.
+    it('refuses to spawn an artistry widget while the backend is offline', async () => {
+      const invokers = makeInvokers()
+      const artistryBackendReachable = vi.fn().mockResolvedValue(false)
+
+      const result = await executeWidgetAction({
+        action: 'spawn',
+        id: 'soccer-widget-01',
+        componentName: 'artistry',
+        componentProps: '{"status":"generating","prompt":"goal"}',
+        size: 'm',
+        ttlSeconds: 0,
+      }, { invokers, artistryBackendReachable })
+
+      expect(result).toContain('offline')
+      expect(artistryBackendReachable).toHaveBeenCalledTimes(1)
+      expect(invokers.addWidget).not.toHaveBeenCalled()
+    })
+
+    it('spawns an artistry widget normally when the backend is reachable', async () => {
+      const invokers = makeInvokers()
+      vi.mocked(invokers.addWidget).mockResolvedValue('art-1')
+      const artistryBackendReachable = vi.fn().mockResolvedValue(true)
+
+      const result = await executeWidgetAction({
+        action: 'spawn',
+        id: 'art-1',
+        componentName: 'artistry',
+        componentProps: '{"status":"generating","prompt":"goal"}',
+        size: 'm',
+        ttlSeconds: 0,
+      }, { invokers, artistryBackendReachable })
+
+      expect(result).toContain('art-1')
+      expect(invokers.addWidget).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not probe the artistry backend for non-artistry widgets', async () => {
+      const invokers = makeInvokers()
+      vi.mocked(invokers.addWidget).mockResolvedValue('w-1')
+      const artistryBackendReachable = vi.fn().mockResolvedValue(false)
+
+      const result = await executeWidgetAction({
+        action: 'spawn',
+        id: 'w-1',
+        componentName: 'weather',
+        componentProps: '{"city":"Seoul"}',
+        size: 'm',
+        ttlSeconds: 0,
+      }, { invokers, artistryBackendReachable })
+
+      expect(result).toContain('w-1')
+      expect(artistryBackendReachable).not.toHaveBeenCalled()
+      expect(invokers.addWidget).toHaveBeenCalledTimes(1)
+    })
+
+    it('refuses to update an artistry widget while the backend is offline', async () => {
+      const invokers = makeInvokers()
+      const artistryBackendReachable = vi.fn().mockResolvedValue(false)
+
+      const result = await executeWidgetAction({
+        action: 'update',
+        id: 'soccer-widget-01',
+        componentName: 'artistry',
+        componentProps: '{"status":"generating","prompt":"goal"}',
+      }, { invokers, artistryBackendReachable })
+
+      expect(result).toContain('offline')
+      expect(invokers.updateWidget).not.toHaveBeenCalled()
+    })
+
     it('forwards custom window sizing when spawning a widget', async () => {
       const invokers = makeInvokers()
       vi.mocked(invokers.addWidget).mockResolvedValue('sized-widget')

@@ -16,6 +16,88 @@ export function getArtistryConfig(): ResolvedArtistryConfig {
   return resolveArtistryConfigFromStore(useArtistryStore())
 }
 
+/** Probe result cache so each chat send does not re-ping the backend. */
+let backendProbe: { at: number, ok: boolean } | undefined
+/** Re-probe after this long; a freshly started ComfyUI is picked up within ~30s. */
+const BACKEND_PROBE_TTL_MS = 30_000
+/** Liveness probe deadline; LAN/local ComfyUI answers well under this. */
+const BACKEND_PROBE_TIMEOUT_MS = 1_500
+
+/**
+ * Injectable dependencies for {@link isArtistryBackendReachable}; production
+ * uses the real `fetch`/`Date.now`, tests pass fakes (FP + DI instead of
+ * stubbing globals).
+ */
+export interface ArtistryBackendProbeDeps {
+  /** Fetch implementation used for the liveness probe. @default globalThis.fetch */
+  fetchImpl?: typeof fetch
+  /** Clock used for the probe cache TTL. @default Date.now */
+  now?: () => number
+}
+
+/** Clears the probe cache; test-only escape hatch. */
+export function resetArtistryBackendProbeCache() {
+  backendProbe = undefined
+}
+
+/**
+ * Checks whether the configured artistry image backend is reachable.
+ *
+ * Use when:
+ * - Deciding if the `image_journal` tool should be offered to the LLM for
+ *   this turn — advertising the tool while ComfyUI is down makes the model
+ *   call it, stall on the failed generation, and drag the whole chat turn.
+ *
+ * Expects:
+ * - Only probes the `comfyui` provider (a local/LAN server that is commonly
+ *   offline); hosted providers (replicate, nanobanana) are assumed up.
+ *
+ * Returns:
+ * - `true` when reachable or not probeable; `false` when the configured
+ *   ComfyUI URL is missing or did not answer within the timeout. Results
+ *   are cached for {@link BACKEND_PROBE_TTL_MS}.
+ */
+export async function isArtistryBackendReachable(
+  config: ResolvedArtistryConfig,
+  deps?: ArtistryBackendProbeDeps,
+): Promise<boolean> {
+  const fetchImpl = deps?.fetchImpl ?? globalThis.fetch
+  const now = deps?.now ?? Date.now
+
+  if (config.provider !== 'comfyui')
+    return true
+
+  const serverUrl = config.globals?.comfyuiServerUrl as string | undefined
+  if (!serverUrl?.trim())
+    return false
+
+  if (backendProbe && now() - backendProbe.at < BACKEND_PROBE_TTL_MS)
+    return backendProbe.ok
+
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), BACKEND_PROBE_TIMEOUT_MS)
+    // NOTICE:
+    // `mode: 'no-cors'` on purpose: ComfyUI does not send CORS headers by
+    // default, so a normal fetch from the renderer origin would reject even
+    // when the server is healthy. An opaque no-cors response still resolves
+    // only if the TCP/HTTP round-trip succeeded, which is all we need for
+    // liveness. The actual generation runs in the main process (no CORS).
+    // Removal condition: probe moves to the main process via eventa.
+    await fetchImpl(new URL('system_stats', serverUrl.endsWith('/') ? serverUrl : `${serverUrl}/`), {
+      mode: 'no-cors',
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+    backendProbe = { at: now(), ok: true }
+  }
+  catch {
+    backendProbe = { at: now(), ok: false }
+  }
+
+  return backendProbe.ok
+}
+
 function createInvokers() {
   const { context } = createContext(window.electron.ipcRenderer)
   return {
@@ -207,4 +289,13 @@ const tools: Promise<Tool>[] = [
   }),
 ]
 
-export const imageJournalTools = async () => Promise.all(tools)
+export async function imageJournalTools() {
+  // Backend down -> withhold the tool entirely. The model then answers in
+  // plain text instead of issuing an image_journal call that cannot finish.
+  if (!(await isArtistryBackendReachable(getArtistryConfig()))) {
+    console.warn('[ImageJournalTool] artistry backend unreachable; image_journal excluded from this turn')
+    return []
+  }
+
+  return Promise.all(tools)
+}

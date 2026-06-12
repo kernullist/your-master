@@ -29,6 +29,7 @@ import {
   electronMcpOpenConfigFile,
 } from '../../../../shared/eventa'
 import { onAppBeforeQuit } from '../../../libs/bootkit/lifecycle'
+import { parseQualifiedToolName, resolveRequestedToolName, toolNameSeparator } from './tool-name'
 
 interface McpServerSession {
   client: Client
@@ -61,9 +62,12 @@ const mcpConfigSchema = z.object({
 const defaultMcpConfig: ElectronMcpStdioConfigFile = {
   mcpServers: {},
 }
-const toolNameSeparator = '::'
 const mcpRequestTimeoutMsec = 10_000
 const mcpRequestMaxTotalTimeoutMsec = 15_000
+
+// NOTICE: parseQualifiedToolName / resolveFallbackToolName previously lived
+// here; they moved to `./tool-name` (pure, electron-free) so they can be
+// unit-tested together with the new resolveRequestedToolName fuzzy matcher.
 
 function stringifyError(error: unknown) {
   if (error instanceof Error) {
@@ -75,34 +79,6 @@ function stringifyError(error: unknown) {
 
 function getConfigPath() {
   return join(app.getPath('userData'), 'mcp.json')
-}
-
-function parseQualifiedToolName(name: string) {
-  const separatorIndex = name.indexOf(toolNameSeparator)
-  if (separatorIndex <= 0 || separatorIndex === name.length - toolNameSeparator.length) {
-    throw new Error(`invalid qualified tool name: ${name}`)
-  }
-
-  return {
-    serverName: name.slice(0, separatorIndex),
-    toolName: name.slice(separatorIndex + toolNameSeparator.length),
-  }
-}
-
-function resolveFallbackToolName(toolName: string): string | undefined {
-  const normalizedTransportPrefix = toolName
-    .replace(/^\.(?:stdio|stdo)::/, '')
-    .replace(/^(?:stdio|stdo)::/, '')
-  if (normalizedTransportPrefix !== toolName) {
-    return normalizedTransportPrefix
-  }
-
-  const lastSeparatorIndex = toolName.lastIndexOf(toolNameSeparator)
-  if (lastSeparatorIndex <= 0 || lastSeparatorIndex === toolName.length - toolNameSeparator.length) {
-    return undefined
-  }
-
-  return toolName.slice(lastSeparatorIndex + toolNameSeparator.length)
 }
 
 async function closeSession(session: McpServerSession) {
@@ -291,35 +267,59 @@ export function createMcpStdioManager(): McpStdioManager {
       throw new Error(`mcp server is not running: ${serverName}`)
     }
 
+    const callOnce = async (name: string) => session.client.callTool({
+      name,
+      arguments: payload.arguments ?? {},
+    }, undefined, {
+      timeout: mcpRequestTimeoutMsec,
+      maxTotalTimeout: mcpRequestMaxTotalTimeoutMsec,
+    })
+
+    // Best-effort live tool listing for self-correction; an empty list means
+    // "could not verify" and falls back to propagating the original error.
+    const listServerToolNames = async (): Promise<string[]> => {
+      try {
+        const response = await session.client.listTools(undefined, {
+          timeout: mcpRequestTimeoutMsec,
+          maxTotalTimeout: mcpRequestMaxTotalTimeoutMsec,
+        })
+        return response.tools.map(item => item.name)
+      }
+      catch {
+        return []
+      }
+    }
+
     let result
     try {
-      result = await session.client.callTool({
-        name: toolName,
-        arguments: payload.arguments ?? {},
-      }, undefined, {
-        timeout: mcpRequestTimeoutMsec,
-        maxTotalTimeout: mcpRequestMaxTotalTimeoutMsec,
-      })
+      result = await callOnce(toolName)
     }
     catch (error) {
-      const fallbackToolName = resolveFallbackToolName(toolName)
-      if (!fallbackToolName || fallbackToolName === toolName) {
+      const availableNames = await listServerToolNames()
+
+      // The tool exists -> this is a genuine execution failure (timeout,
+      // bad arguments, upstream API error); never mask it with renaming.
+      if (availableNames.length === 0 || availableNames.includes(toolName)) {
         throw error
+      }
+
+      const resolvedToolName = resolveRequestedToolName(toolName, availableNames)
+      if (!resolvedToolName || resolvedToolName === toolName) {
+        // Echo the real names back so the calling LLM can self-correct on
+        // its next round instead of guessing again.
+        throw new Error(
+          `unknown tool "${toolName}" on mcp server "${serverName}". `
+          + `Available tools: ${availableNames.map(name => `${serverName}${toolNameSeparator}${name}`).join(', ')}`,
+        )
       }
 
       log.withFields({
         serverName,
         requestedToolName: toolName,
-        fallbackToolName,
-      }).warn('retrying mcp tool call with normalized tool name')
+        resolvedToolName,
+      }).warn('retrying mcp tool call with resolved tool name')
 
-      result = await session.client.callTool({
-        name: fallbackToolName,
-        arguments: payload.arguments ?? {},
-      }, undefined, {
-        timeout: mcpRequestTimeoutMsec,
-        maxTotalTimeout: mcpRequestMaxTotalTimeoutMsec,
-      })
+      result = await callOnce(resolvedToolName)
     }
 
     const normalized: ElectronMcpCallToolResult = {}

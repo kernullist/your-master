@@ -57,10 +57,25 @@ describe('useTamagotchiMcpToolsStore', async () => {
     const listTools = mcpTools?.find(tool => tool.function.name === 'builtIn_mcpListTools')
     const callTool = mcpTools?.find(tool => tool.function.name === 'builtIn_mcpCallTool')
 
+    // Proxies plus one flattened first-class tool per MCP descriptor: weak
+    // local models skip the list-then-call discovery hop, so each MCP tool is
+    // also exposed directly with its real description and schema.
     expect(mcpTools).toEqual([
       expect.objectContaining({ function: expect.objectContaining({ name: 'builtIn_mcpListTools' }) }),
       expect.objectContaining({ function: expect.objectContaining({ name: 'builtIn_mcpCallTool' }) }),
+      expect.objectContaining({ function: expect.objectContaining({ name: 'mcp_filesystem_search' }) }),
     ])
+
+    const flattenedTool = mcpTools?.find(tool => tool.function.name === 'mcp_filesystem_search')
+    const flattenedResult = await flattenedTool?.execute({ query: 'direct' }, toolOptions)
+    expect(invokeMocks.callMcpTool).toHaveBeenCalledWith({
+      name: 'filesystem::search',
+      arguments: { query: 'direct' },
+    })
+    expect(flattenedResult).toEqual({
+      content: [{ type: 'text', text: 'ok' }],
+      isError: false,
+    })
 
     const listResult = await listTools?.execute({}, toolOptions)
     const callResult = await callTool?.execute({
@@ -68,7 +83,8 @@ describe('useTamagotchiMcpToolsStore', async () => {
       arguments: JSON.stringify({ query: 'hello', limit: 10 }),
     }, toolOptions)
 
-    expect(invokeMocks.listMcpTools).toHaveBeenCalledTimes(1)
+    // One listing for the flatten pass at refresh time, one for the proxy call.
+    expect(invokeMocks.listMcpTools).toHaveBeenCalledTimes(2)
     expect(invokeMocks.callMcpTool).toHaveBeenCalledWith({
       name: 'filesystem::search',
       arguments: { query: 'hello', limit: 10 },

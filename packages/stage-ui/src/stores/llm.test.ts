@@ -16,12 +16,17 @@ const {
   streamTextMock: vi.fn(),
   mcpMock: vi.fn(async (): Promise<Tool[]> => []),
   debugMock: vi.fn(async (): Promise<Tool[]> => []),
-  createSparkCommandToolMock: vi.fn(async (): Promise<unknown> => ({
+  // NOTICE:
+  // Must resolve to an ARRAY: llm.ts spreads `...await createSparkCommandTool(...)`
+  // into the builtin tool list. The previous object-shaped mock made the
+  // resolver throw "(intermediate value) is not iterable", cascading into six
+  // unrelated-looking failures across this file.
+  createSparkCommandToolMock: vi.fn(async (): Promise<unknown[]> => [{
     name: 'spark',
     description: '',
     parameters: {},
     execute: vi.fn(),
-  })),
+  }]),
 }))
 
 vi.mock('@xsai/model', () => ({

@@ -1,7 +1,7 @@
 import type { Tool } from '@xsai/shared-chat'
 
 import { errorMessageFrom } from '@moeru/std'
-import { tool } from '@xsai/tool'
+import { rawTool, tool } from '@xsai/tool'
 import { z } from 'zod'
 
 /**
@@ -129,6 +129,114 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
       }).strict(),
     }),
   ]
+}
+
+/**
+ * Normalizes a qualified MCP tool name into a provider-safe function name.
+ *
+ * Provider APIs (OpenAI-compatible included) restrict tool names to
+ * `[a-zA-Z0-9_-]`, so the `server::tool` form cannot be exposed directly —
+ * which is why the generic call-by-name proxy existed. Flattened tools need
+ * a sanitized name instead.
+ *
+ * Before:
+ * - "tavily::tavily_search"
+ *
+ * After:
+ * - "mcp_tavily_tavily_search"
+ */
+export function sanitizeMcpToolName(qualifiedName: string, taken: Set<string>): string {
+  const base = `mcp_${qualifiedName}`
+    .replace(/[^\w-]/g, '_')
+    .replace(/_{2,}/g, '_')
+    .slice(0, 60)
+
+  let candidate = base
+  let suffix = 1
+  while (taken.has(candidate)) {
+    suffix += 1
+    candidate = `${base}_${suffix}`
+  }
+
+  taken.add(candidate)
+  return candidate
+}
+
+/**
+ * Normalizes an MCP-reported input schema into a provider-compliant shape.
+ *
+ * Before:
+ * - undefined, or a schema missing `type` / `properties`
+ *
+ * After:
+ * - An object schema with explicit `type: 'object'` and a `properties` map,
+ *   which strict providers (OpenAI et al.) require.
+ */
+export function normalizeMcpInputSchema(schema?: Record<string, unknown>): Record<string, unknown> {
+  const base: Record<string, unknown> = schema && typeof schema === 'object' ? { ...schema } : {}
+  base.type ??= 'object'
+  if (base.type === 'object' && base.properties == null) {
+    base.properties = {}
+  }
+  return base
+}
+
+/**
+ * Flattens live MCP tools into first-class xsai tools, one per MCP tool.
+ *
+ * Use when:
+ * - Building the per-session tool list once MCP servers are running. The
+ *   generic list/call proxy pair requires a two-hop discovery flow that weak
+ *   local models rarely execute correctly (they skip the list call or mangle
+ *   the qualified name); flattened tools put the real name, description and
+ *   input schema directly into the model's tool list.
+ *
+ * Expects:
+ * - `runtime.listTools()` to reflect currently running servers; a listing
+ *   failure degrades to an empty array instead of throwing.
+ *
+ * Returns:
+ * - One tool per MCP descriptor, executing through `runtime.callTool` with
+ *   the original qualified name.
+ */
+export async function createFlattenedMcpTools(runtime: McpToolRuntime): Promise<Tool[]> {
+  let descriptors: McpToolDescriptor[]
+  try {
+    descriptors = await runtime.listTools()
+  }
+  catch (error) {
+    console.warn('[createFlattenedMcpTools] failed to list tools, exposing none:', error)
+    return []
+  }
+
+  const taken = new Set<string>()
+  return descriptors.map(descriptor => rawTool({
+    name: sanitizeMcpToolName(descriptor.name, taken),
+    description: descriptor.description?.trim() || `MCP tool "${descriptor.toolName}" from server "${descriptor.serverName}".`,
+    execute: async (params) => {
+      try {
+        return await runtime.callTool({
+          name: descriptor.name,
+          arguments: (params ?? {}) as Record<string, unknown>,
+        })
+      }
+      catch (error) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: errorMessageFrom(error) ?? String(error) }],
+        }
+      }
+    },
+    parameters: normalizeMcpInputSchema(descriptor.inputSchema) as never,
+    // NOTICE:
+    // strict defaults to true, which rewrites the schema via strictJsonSchema
+    // (all properties forced into `required`, additionalProperties: false).
+    // MCP servers commonly declare optional parameters, so strict mode would
+    // make calls with omitted optionals invalid. Keep the server's schema.
+    // Source: node_modules/@xsai/tool/dist/index.js (rawTool).
+    // Removal condition: xsai exposes per-parameter strictness control.
+    strict: false,
+  }))
 }
 
 function createUnavailableMcpToolRuntime(): McpToolRuntime {
