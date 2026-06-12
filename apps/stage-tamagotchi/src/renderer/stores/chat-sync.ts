@@ -26,6 +26,7 @@ import { reminderTools } from './tools/builtin/reminders'
 import { routineTools } from './tools/builtin/routines'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
+import { windowControlTools } from './tools/builtin/window-control'
 
 type ChatSyncMode = 'inactive' | 'authority' | 'follower'
 type ToolsetId = 'widgets' | 'artistry' | 'project-management'
@@ -548,11 +549,11 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
       'widgets': async () => {
-        const [w, we, pm, fa, ce, dio, mem, rem, rt] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools()])
-        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt]
+        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools()])
+        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc]
       },
       'artistry': async () => {
-        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt] = await Promise.all([
+        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc] = await Promise.all([
           imageJournalTools(),
           widgetsTools(),
           weatherTools(),
@@ -563,8 +564,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           memoryTools(),
           reminderTools(),
           routineTools(),
+          windowControlTools(),
         ])
-        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt]
+        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc]
       },
       'project-management': async () => {
         return projectManagementTools()

@@ -6,6 +6,7 @@ import { createCommandExecService } from '../command-exec'
 import { createDesktopIoService } from '../desktop-io'
 import { createFileAccessService } from '../file-access'
 import { createSystemInfoService } from '../system-info'
+import { createWindowControlService } from '../window-control'
 
 /**
  * Registers the PC-assistant services (file access, command execution,
@@ -41,4 +42,5 @@ export function setupDesktopAssistantServices(ipcMain: IpcMain) {
   createCommandExecService({ context })
   createDesktopIoService({ context })
   createSystemInfoService({ context })
+  createWindowControlService({ context })
 }

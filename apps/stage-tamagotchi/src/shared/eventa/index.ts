@@ -315,6 +315,28 @@ export interface ElectronSystemInfo {
 
 export const electronSystemInfo = defineInvokeEventa<ElectronSystemInfo, void>('eventa:invoke:electron:system-info')
 
+/** A top-level OS window with a visible title. */
+export interface ElectronWindowEntry {
+  processId: number
+  process: string
+  title: string
+}
+
+export interface ElectronWindowListResult {
+  windows?: ElectronWindowEntry[]
+  error?: string
+}
+
+/** Result of a window focus/close request. */
+export interface ElectronWindowActionResult {
+  ok: boolean
+  message: string
+}
+
+export const electronOsWindowList = defineInvokeEventa<ElectronWindowListResult, void>('eventa:invoke:electron:os-window:list')
+export const electronOsWindowFocus = defineInvokeEventa<ElectronWindowActionResult, { match: string }>('eventa:invoke:electron:os-window:focus')
+export const electronOsWindowClose = defineInvokeEventa<ElectronWindowActionResult, { match: string }>('eventa:invoke:electron:os-window:close')
+
 export const electronFilesRead = defineInvokeEventa<ElectronFileReadResult, { path: string }>('eventa:invoke:electron:files:read')
 export const electronFilesList = defineInvokeEventa<ElectronFileListResult, { path: string }>('eventa:invoke:electron:files:list')
 export const electronFilesWrite = defineInvokeEventa<ElectronFileWriteResult, { path: string, content: string }>('eventa:invoke:electron:files:write')

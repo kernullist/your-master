@@ -20,6 +20,9 @@ reads are free.
 | `save_routine` | Save a named multi-step routine (macro) | none | `renderer` routines store |
 | `run_routine` | Return a saved routine's steps to carry out with other tools | none | `renderer` routines store |
 | `list_routines` / `delete_routine` | List or delete saved routines | none | `renderer` routines store |
+| `list_windows` | List open windows (process + title) | none | `window-control` |
+| `focus_window` | Bring a window to the front by title substring | none | `window-control` |
+| `close_window` | Gracefully close a window by title substring | **dialog** | `window-control` |
 | `remember` | Save a durable fact about the user (per character) | none | `stage-ui` memory store |
 | `recall_memories` | List remembered facts for the active character | none | `stage-ui` memory store |
 | `forget` | Delete a remembered fact by id | none | `stage-ui` memory store |
@@ -57,6 +60,9 @@ What the user can say in chat to trigger each tool:
 | "그 알림 취소해줘" | `cancel_reminder` |
 | "아침 루틴 저장해줘: 날씨 확인하고 할 일 알려줘" | `save_routine` |
 | "아침 루틴 실행해줘" | `run_routine` → carries out the steps with other tools |
+| "지금 열린 창 뭐 있어?" | `list_windows` |
+| "메모장 창 앞으로 가져와줘" | `focus_window` |
+| "그 브라우저 창 닫아줘" | `close_window` → approval dialog |
 
 ### Reminders
 
@@ -108,6 +114,10 @@ willingness to act. Keep it concise and update it when capability areas change
   feature and is not implemented.
 - Memory facts are plain strings with exact-text dedup; no semantic recall or
   automatic summarization of old conversations yet.
+- GUI control is limited to window management (list/focus/close). Mouse and
+  keyboard injection are intentionally not implemented — they need native
+  modules (nut.js/robotjs) and carry a high misfire risk. The
+  `@proj-airi/computer-use-mcp` service is macOS-only and does not apply here.
 
 > When adding a new assistant tool, update this file in the same change:
 > add a row to the tools table, a chat usage example, and note any approval
