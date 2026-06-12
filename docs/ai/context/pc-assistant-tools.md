@@ -17,6 +17,9 @@ reads are free.
 | `clipboard_write` | Replace clipboard text | none | `desktop-io` |
 | `screenshot` | Capture primary screen to a PNG under Pictures, return its path | none | `desktop-io` |
 | `system_info` | Read CPU/memory usage, OS info, hostname, uptime | none | `system-info` |
+| `save_routine` | Save a named multi-step routine (macro) | none | `renderer` routines store |
+| `run_routine` | Return a saved routine's steps to carry out with other tools | none | `renderer` routines store |
+| `list_routines` / `delete_routine` | List or delete saved routines | none | `renderer` routines store |
 | `remember` | Save a durable fact about the user (per character) | none | `stage-ui` memory store |
 | `recall_memories` | List remembered facts for the active character | none | `stage-ui` memory store |
 | `forget` | Delete a remembered fact by id | none | `stage-ui` memory store |
@@ -52,6 +55,8 @@ What the user can say in chat to trigger each tool:
 | "30분 뒤에 스트레칭하라고 알려줘" | `set_reminder` |
 | "예약된 알림 뭐 있어?" | `list_reminders` |
 | "그 알림 취소해줘" | `cancel_reminder` |
+| "아침 루틴 저장해줘: 날씨 확인하고 할 일 알려줘" | `save_routine` |
+| "아침 루틴 실행해줘" | `run_routine` → carries out the steps with other tools |
 
 ### Reminders
 
