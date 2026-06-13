@@ -100,14 +100,18 @@ it adds second-level precision and appears in `list_reminders`/`cancel_reminder`
 
 ### Long-term memory
 
-`remember`/`recall_memories`/`forget` persist facts to IndexedDB, scoped per
-character card, surviving restarts. Stored facts are injected into the system
-message as a `## What you remember about the user` section
-(`packages/stage-ui/src/stores/chat/memory-store.ts`,
+`remember`/`recall_memories`/`forget` persist memories to IndexedDB, scoped per
+character card, surviving restarts. Each memory has a `kind` —
+`instruction` (a standing request), `decision`, `event`, `preference`, or
+`fact` — so the assistant can tell "what you asked me to do" from "what we
+decided" from "facts about you". Memories are injected into the system message
+as a `## What you remember` section grouped by kind, with dates on
+instructions/decisions/events (`packages/stage-ui/src/stores/chat/memory-store.ts`,
 `...stores/chat/session-store.ts`). The section is refreshed on every send, so
-a freshly remembered fact reaches the next turn. Empty memory yields an empty
-string (KV-cache stable). Secrets/sensitive data must not be stored (the
-conversational-style prompt instructs the model accordingly).
+a freshly remembered item reaches the next turn. Empty memory yields an empty
+string (KV-cache stable; dates are absolute `YYYY-MM-DD`, not relative, to keep
+the prefix stable). Pre-`kind` records migrate to `fact` on load. Secrets must
+not be stored (the conversational-style prompt instructs the model accordingly).
 
 ### Capability scoping
 

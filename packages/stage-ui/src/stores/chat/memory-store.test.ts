@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { formatMemoriesForPrompt, useChatMemoryStore } from './memory-store'
+import { formatMemoriesForPrompt, normalizeMemoryKind, useChatMemoryStore } from './memory-store'
 
 // In-memory localforage stub: the store only uses getItem/setItem.
 const storage = new Map<string, unknown>()
@@ -15,17 +15,34 @@ vi.mock('localforage', () => ({
   },
 }))
 
+describe('normalizeMemoryKind', () => {
+  it('passes valid kinds through and defaults unknown/missing to fact', () => {
+    expect(normalizeMemoryKind('instruction')).toBe('instruction')
+    expect(normalizeMemoryKind('decision')).toBe('decision')
+    expect(normalizeMemoryKind(undefined)).toBe('fact')
+    expect(normalizeMemoryKind('nonsense')).toBe('fact')
+  })
+})
+
 describe('formatMemoriesForPrompt', () => {
   it('returns an empty string for no memories (KV-cache stable)', () => {
     expect(formatMemoriesForPrompt([])).toBe('')
   })
 
-  it('renders a bulleted memory section', () => {
+  it('groups by kind, dates instructions/decisions/events, and omits dates for facts', () => {
+    // 2026-06-10 local
+    const instructionAt = new Date(2026, 5, 10, 9, 0, 0).getTime()
     const out = formatMemoriesForPrompt([
-      { id: 'a', text: 'The user\'s name is 꿀보.', createdAt: 1 },
-      { id: 'b', text: 'Prefers Korean.', createdAt: 2 },
+      { id: 'a', kind: 'fact', text: 'The user\'s name is 꿀보.', createdAt: 1 },
+      { id: 'b', kind: 'instruction', text: 'Email the report on Mondays', createdAt: instructionAt },
+      { id: 'c', kind: 'preference', text: 'Prefers Korean', createdAt: 2 },
     ])
-    expect(out).toBe('## What you remember about the user\n- The user\'s name is 꿀보.\n- Prefers Korean.')
+    expect(out).toContain('## What you remember')
+    // Instructions come first (declaration order) and carry a date.
+    expect(out).toContain('### Standing instructions from the user\n- (2026-06-10) Email the report on Mondays')
+    // Facts have no date.
+    expect(out).toContain('### Facts about the user\n- The user\'s name is 꿀보.')
+    expect(out).toContain('### User preferences\n- Prefers Korean')
   })
 })
 
@@ -35,48 +52,43 @@ describe('useChatMemoryStore', () => {
     storage.clear()
   })
 
-  it('remembers a fact and lists it', async () => {
+  it('remembers an item with its kind and lists it', async () => {
     const store = useChatMemoryStore()
-    await store.remember('char-1', 'The user likes tea.', 1000)
+    await store.remember('char-1', 'The user likes tea.', 'preference', 1000)
     const items = store.list('char-1')
     expect(items).toHaveLength(1)
     expect(items[0].text).toBe('The user likes tea.')
+    expect(items[0].kind).toBe('preference')
   })
 
-  it('trims whitespace and de-duplicates identical facts', async () => {
+  it('de-duplicates on (kind, text) but keeps same text under a different kind', async () => {
     const store = useChatMemoryStore()
-    await store.remember('char-1', 'Likes tea.', 1000)
-    const second = await store.remember('char-1', '  Likes tea.  ', 2000)
+    await store.remember('char-1', 'Use LM Studio', 'decision', 1000)
+    const dupe = await store.remember('char-1', '  Use LM Studio  ', 'decision', 2000)
     expect(store.list('char-1')).toHaveLength(1)
-    // The existing item is returned, not a duplicate.
-    expect(second.createdAt).toBe(1000)
+    expect(dupe.createdAt).toBe(1000)
+    // Same text, different kind -> a distinct memory.
+    await store.remember('char-1', 'Use LM Studio', 'instruction', 3000)
+    expect(store.list('char-1')).toHaveLength(2)
   })
 
-  it('scopes memories per character', async () => {
+  it('forgets an item by id', async () => {
     const store = useChatMemoryStore()
-    await store.remember('char-1', 'Fact A', 1000)
-    await store.remember('char-2', 'Fact B', 1001)
-    expect(store.list('char-1').map(item => item.text)).toEqual(['Fact A'])
-    expect(store.list('char-2').map(item => item.text)).toEqual(['Fact B'])
-  })
-
-  it('forgets a fact by id', async () => {
-    const store = useChatMemoryStore()
-    const item = await store.remember('char-1', 'Temporary fact', 1000)
+    const item = await store.remember('char-1', 'Temporary', 'fact', 1000)
     expect(await store.forget('char-1', item.id)).toBe(true)
     expect(store.list('char-1')).toHaveLength(0)
-    // Forgetting an unknown id is a no-op.
     expect(await store.forget('char-1', 'nope')).toBe(false)
   })
 
-  it('persists across store instances via localforage', async () => {
-    const first = useChatMemoryStore()
-    await first.remember('char-1', 'Durable fact', 1000)
+  it('persists across store instances and migrates pre-kind records to fact', async () => {
+    // Seed storage with a legacy record that has no `kind`.
+    storage.set('chat-memory-char-1', [{ id: 'old', text: 'Legacy fact', createdAt: 1000 }])
 
-    // Simulate an app restart: fresh pinia, but the same backing storage.
-    setActivePinia(createPinia())
-    const second = useChatMemoryStore()
-    await second.ensureLoaded('char-1')
-    expect(second.list('char-1').map(item => item.text)).toEqual(['Durable fact'])
+    const store = useChatMemoryStore()
+    await store.ensureLoaded('char-1')
+    const items = store.list('char-1')
+    expect(items).toHaveLength(1)
+    expect(items[0].kind).toBe('fact')
+    expect(items[0].text).toBe('Legacy fact')
   })
 })

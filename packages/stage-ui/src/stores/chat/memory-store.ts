@@ -3,12 +3,31 @@ import localforage from 'localforage'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
-/** A single remembered fact about the user, scoped to one character. */
+/**
+ * Kind of a remembered item. Distinguishing these lets the assistant answer
+ * "what did I ask you to do?" vs "what did we decide?" and surface them
+ * differently in the prompt.
+ */
+export type MemoryKind = 'instruction' | 'event' | 'decision' | 'preference' | 'fact'
+
+/** All memory kinds, in prompt display order. */
+export const MEMORY_KINDS: MemoryKind[] = ['instruction', 'decision', 'event', 'preference', 'fact']
+
+/** A single remembered item, scoped to one character. */
 export interface MemoryItem {
   id: string
-  /** The fact text, e.g. "The user's name is 꿀보." */
+  /** What kind of memory this is (instruction/decision/event/preference/fact). */
+  kind: MemoryKind
+  /** The memory text, e.g. "The user's name is 꿀보." */
   text: string
   createdAt: number
+}
+
+const VALID_KINDS = new Set<string>(MEMORY_KINDS)
+
+/** Coerces an arbitrary value to a valid MemoryKind, defaulting to 'fact'. */
+export function normalizeMemoryKind(value: unknown): MemoryKind {
+  return typeof value === 'string' && VALID_KINDS.has(value) ? value as MemoryKind : 'fact'
 }
 
 /** Cap on stored facts per character; oldest are dropped past this. */
@@ -55,7 +74,12 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
     try {
       const stored = await localforage.getItem<MemoryItem[]>(storageKey(characterId))
       if (Array.isArray(stored)) {
-        memoriesByCharacter.value[characterId] = stored
+        // Migrate pre-`kind` records (saved before categorization existed) by
+        // defaulting them to 'fact'.
+        memoriesByCharacter.value[characterId] = stored.map(item => ({
+          ...item,
+          kind: normalizeMemoryKind((item as Partial<MemoryItem>).kind),
+        }))
       }
     }
     catch (error) {
@@ -80,22 +104,22 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
   }
 
   /**
-   * Adds a fact for a character, de-duplicating on exact text and enforcing
-   * the per-character cap (oldest dropped). Returns the created item, or the
-   * existing one when the text already exists.
+   * Adds a memory for a character, de-duplicating on exact (kind, text) and
+   * enforcing the per-character cap (oldest dropped). Returns the created item,
+   * or the existing one when an identical memory already exists.
    */
-  async function remember(characterId: string, text: string, now: number): Promise<MemoryItem> {
+  async function remember(characterId: string, text: string, kind: MemoryKind, now: number): Promise<MemoryItem> {
     await ensureLoaded(characterId)
     const trimmed = text.trim()
 
     const current = memoriesByCharacter.value[characterId] ?? []
-    const existing = current.find(item => item.text === trimmed)
+    const existing = current.find(item => item.text === trimmed && item.kind === kind)
     if (existing) {
       return existing
     }
 
     memoryIdCounter += 1
-    const item: MemoryItem = { id: `mem-${now}-${memoryIdCounter}`, text: trimmed, createdAt: now }
+    const item: MemoryItem = { id: `mem-${now}-${memoryIdCounter}`, kind, text: trimmed, createdAt: now }
     // Drop oldest entries first when over the cap.
     const next = [...current, item].slice(-MAX_MEMORIES_PER_CHARACTER)
     memoriesByCharacter.value = { ...memoriesByCharacter.value, [characterId]: next }
@@ -134,14 +158,40 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
   }
 })
 
+/** Heading shown for each memory kind. */
+const KIND_HEADINGS: Record<MemoryKind, string> = {
+  instruction: 'Standing instructions from the user',
+  decision: 'Decisions made',
+  event: 'Notable events',
+  preference: 'User preferences',
+  fact: 'Facts about the user',
+}
+
+/** Kinds whose date matters for the model to reason about ("when"). */
+const DATED_KINDS = new Set<MemoryKind>(['instruction', 'decision', 'event'])
+
 /**
- * Formats a character's memories into a system-prompt section.
+ * Formats a createdAt timestamp as an ISO-like local date `YYYY-MM-DD`.
+ * Stable (no relative "3 days ago") so the prompt stays KV-cache friendly.
+ */
+function formatMemoryDate(createdAt: number): string {
+  const date = new Date(createdAt)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+/**
+ * Formats a character's memories into a system-prompt section, grouped by kind
+ * so the assistant can tell instructions/decisions/events/preferences/facts
+ * apart. Instructions/decisions/events carry their date.
  *
  * Before:
- * - [{ text: "The user's name is 꿀보." }, { text: "Prefers Korean." }]
+ * - [{ kind: 'instruction', text: 'Email the report on Mondays', createdAt }]
  *
  * After:
- * - "## What you remember about the user\n- The user's name is 꿀보.\n- Prefers Korean."
+ * - "## What you remember\n\n### Standing instructions from the user\n- (2026-06-10) Email the report on Mondays"
  *
  * Returns an empty string when there are no memories so the prompt stays
  * byte-stable (KV-cache friendly) for users who never store any.
@@ -151,6 +201,17 @@ export function formatMemoriesForPrompt(memories: MemoryItem[]): string {
     return ''
   }
 
-  const lines = memories.map(item => `- ${item.text}`).join('\n')
-  return `## What you remember about the user\n${lines}`
+  const sections: string[] = []
+  for (const kind of MEMORY_KINDS) {
+    const items = memories.filter(item => item.kind === kind)
+    if (items.length === 0) {
+      continue
+    }
+    const lines = items.map((item) => {
+      return DATED_KINDS.has(kind) ? `- (${formatMemoryDate(item.createdAt)}) ${item.text}` : `- ${item.text}`
+    }).join('\n')
+    sections.push(`### ${KIND_HEADINGS[kind]}\n${lines}`)
+  }
+
+  return `## What you remember\n\n${sections.join('\n\n')}`
 }

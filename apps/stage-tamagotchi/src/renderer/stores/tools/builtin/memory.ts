@@ -1,6 +1,6 @@
 import type { Tool } from '@xsai/shared-chat'
 
-import { useChatMemoryStore } from '@proj-airi/stage-ui/stores/chat/memory-store'
+import { normalizeMemoryKind, useChatMemoryStore } from '@proj-airi/stage-ui/stores/chat/memory-store'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
@@ -12,27 +12,31 @@ function activeCharacterId(): string {
 const tools: Promise<Tool>[] = [
   tool({
     name: 'remember',
-    description: 'Save a durable fact about the user or an ongoing topic so you recall it in future conversations (across restarts). Use for names, preferences, projects, and commitments. Do NOT save secrets, passwords, or sensitive personal data.',
-    execute: async ({ fact }) => {
+    // strict:false because `kind` is optional (xsai tool() defaults strict:true
+    // without adding optional keys to required — rejected by strict providers).
+    strict: false,
+    description: 'Save something durable to recall in future conversations (across restarts). Set kind to: "instruction" (a standing request the user gave you), "decision" (a choice that was made), "event" (something notable that happened), "preference" (how the user likes things), or "fact" (default). Use for names, preferences, projects, commitments, instructions, and decisions. Do NOT save secrets, passwords, or sensitive personal data.',
+    execute: async ({ fact, kind }) => {
       const memoryStore = useChatMemoryStore()
       const characterId = activeCharacterId()
       await memoryStore.ensureLoaded(characterId)
-      const item = await memoryStore.remember(characterId, fact, Date.now())
-      return `OK: remembered (id ${item.id})`
+      const item = await memoryStore.remember(characterId, fact, normalizeMemoryKind(kind), Date.now())
+      return `OK: remembered ${item.kind} (id ${item.id})`
     },
     parameters: z.object({
-      fact: z.string().describe('A single concise fact to remember, e.g. "The user prefers Korean."'),
+      fact: z.string().describe('A single concise thing to remember, e.g. "Email the weekly report every Monday."'),
+      kind: z.enum(['instruction', 'decision', 'event', 'preference', 'fact']).optional().describe('Category (default "fact")'),
     }),
   }),
   tool({
     name: 'recall_memories',
-    description: 'List everything you currently remember about the user for this character. Use to check what you already know before answering questions about the user.',
+    description: 'List everything you currently remember for this character (instructions, decisions, events, preferences, facts), each with its kind. Use to check what you already know before answering questions about the user or what they asked you to do.',
     execute: async () => {
       const memoryStore = useChatMemoryStore()
       const characterId = activeCharacterId()
       await memoryStore.ensureLoaded(characterId)
       const memories = memoryStore.list(characterId)
-      return JSON.stringify(memories.map(item => ({ id: item.id, text: item.text })))
+      return JSON.stringify(memories.map(item => ({ id: item.id, kind: item.kind, text: item.text })))
     },
     parameters: z.object({}),
   }),
