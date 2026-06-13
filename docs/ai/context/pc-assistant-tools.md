@@ -18,6 +18,7 @@ reads are free.
 | `clipboard_write` | Replace clipboard text | none | `desktop-io` |
 | `screenshot` | Capture primary screen to a PNG under Pictures, return its path | none | `desktop-io` |
 | `system_info` | Read CPU/memory usage, OS info, hostname, uptime | none | `system-info` |
+| `daily_briefing` | Gather date/time + pending to-dos + upcoming reminders for a day-at-a-glance | none | `renderer` |
 | `add_todo` | Add a personal to-do item | none | `renderer` todos store |
 | `list_todos` | List to-do items (pending by default) | none | `renderer` todos store |
 | `complete_todo` / `remove_todo` | Mark done / remove a to-do by id or text | none | `renderer` todos store |
@@ -68,6 +69,7 @@ What the user can say in chat to trigger each tool:
 | "30분 뒤에 스트레칭하라고 알려줘" | `set_reminder` |
 | "예약된 알림 뭐 있어?" | `list_reminders` |
 | "그 알림 취소해줘" | `cancel_reminder` |
+| "오늘 하루 브리핑해줘" / "내 하루 어때?" | `daily_briefing` (+ weather/news) |
 | "장보기 할 일에 추가해줘" | `add_todo` |
 | "내 할 일 뭐 있어?" | `list_todos` |
 | "우유 사기 완료했어" | `complete_todo` (text match) |

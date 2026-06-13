@@ -18,6 +18,7 @@ import { ref, watch } from 'vue'
 import { projectManagementWorkItemStatusChanged } from '../../shared/eventa'
 import { calculatorTools } from './tools/builtin/calculator'
 import { commandExecTools } from './tools/builtin/command-exec'
+import { dailyBriefingTools } from './tools/builtin/daily-briefing'
 import { desktopIoTools } from './tools/builtin/desktop-io'
 import { fileAccessTools } from './tools/builtin/file-access'
 import { imageJournalTools } from './tools/builtin/image-journal'
@@ -552,11 +553,11 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
       'widgets': async () => {
-        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools(), calculatorTools(), timerTools()])
-        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr]
+        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr, db] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools(), calculatorTools(), timerTools(), dailyBriefingTools()])
+        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr, ...db]
       },
       'artistry': async () => {
-        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr] = await Promise.all([
+        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr, db] = await Promise.all([
           imageJournalTools(),
           widgetsTools(),
           weatherTools(),
@@ -571,8 +572,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           todoTools(),
           calculatorTools(),
           timerTools(),
+          dailyBriefingTools(),
         ])
-        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr]
+        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr, ...db]
       },
       'project-management': async () => {
         return projectManagementTools()

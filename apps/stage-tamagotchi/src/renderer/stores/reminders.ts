@@ -79,6 +79,27 @@ export function validateTimerDuration(value: number, unit: 'seconds' | 'minutes'
   return undefined
 }
 
+/** Default look-ahead window for a daily briefing (next 24 hours). */
+export const BRIEFING_WINDOW_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Selects reminders due within a look-ahead window, soonest first.
+ *
+ * Use when:
+ * - Building a daily briefing of what is coming up.
+ *
+ * Expects:
+ * - `reminders` is the full pending list; `now`/`windowMs` define the window.
+ *
+ * Returns:
+ * - Reminders with `dueAt` in `[now, now + windowMs]`, ascending by `dueAt`.
+ */
+export function selectUpcomingReminders(reminders: Reminder[], now: number, windowMs: number): Reminder[] {
+  return reminders
+    .filter(reminder => reminder.dueAt >= now && reminder.dueAt <= now + windowMs)
+    .sort((a, b) => a.dueAt - b.dueAt)
+}
+
 /**
  * Reminder scheduler. Reminders persist to localStorage and survive reloads;
  * on init, pending reminders are re-armed and past-due ones fire shortly after.

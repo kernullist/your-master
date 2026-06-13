@@ -1,6 +1,8 @@
+import type { Reminder } from './reminders'
+
 import { describe, expect, it } from 'vitest'
 
-import { MAX_REMINDER_DELAY_MS, reminderDelayMs, timerDurationMs, validateReminderMinutes, validateTimerDuration } from './reminders'
+import { MAX_REMINDER_DELAY_MS, reminderDelayMs, selectUpcomingReminders, timerDurationMs, validateReminderMinutes, validateTimerDuration } from './reminders'
 
 describe('reminderDelayMs', () => {
   it('returns the gap until the due time', () => {
@@ -51,5 +53,27 @@ describe('validateTimerDuration', () => {
   it('accepts short and ordinary timers', () => {
     expect(validateTimerDuration(30, 'seconds')).toBeUndefined()
     expect(validateTimerDuration(25, 'minutes')).toBeUndefined()
+  })
+})
+
+describe('selectUpcomingReminders', () => {
+  const now = 1_000_000
+  const make = (id: string, dueAt: number): Reminder => ({ id, message: id, dueAt, createdAt: 0 })
+
+  it('keeps only reminders within the window, soonest first', () => {
+    const reminders = [
+      make('far', now + 48 * 60 * 60 * 1000),
+      make('soon', now + 60 * 1000),
+      make('past', now - 1000),
+      make('mid', now + 60 * 60 * 1000),
+    ]
+    const upcoming = selectUpcomingReminders(reminders, now, 24 * 60 * 60 * 1000)
+    expect(upcoming.map(r => r.id)).toEqual(['soon', 'mid'])
+  })
+
+  it('includes a reminder due exactly at the window edge and now', () => {
+    const windowMs = 1000
+    const reminders = [make('atNow', now), make('atEdge', now + windowMs), make('justOver', now + windowMs + 1)]
+    expect(selectUpcomingReminders(reminders, now, windowMs).map(r => r.id)).toEqual(['atNow', 'atEdge'])
   })
 })
