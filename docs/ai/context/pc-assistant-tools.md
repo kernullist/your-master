@@ -92,7 +92,9 @@ renderer (`stores/reminders.ts`), persisted to localStorage so they survive
 reloads — `initialize()` re-arms them at startup and past-due ones fire shortly
 after. On fire, AIRI appends a proactive assistant message to the active chat
 session and shows an OS notification via the main process
-(`electronNotify` → `desktop-io`). Max delay ~30 days. `set_timer`
+(`electronNotify` → `desktop-io`). Max delay ~30 days, armed in chunks of at
+most `MAX_SAFE_TIMEOUT_MS` so a long delay never hits setTimeout's 32-bit
+overflow (which would fire it immediately). `set_timer`
 (`tools/builtin/timer.ts`) is a countdown built on the same store/scheduler —
 it adds second-level precision and appears in `list_reminders`/`cancel_reminder`.
 
@@ -143,6 +145,27 @@ willingness to act. Keep it concise and update it when capability areas change
   not a hard sandbox boundary.
 - Policy logic lives in pure, unit-tested `policy.ts` modules per service.
 
+### Reliability & provider compatibility
+
+Cross-cutting invariants established during review — keep them when editing tools:
+
+- **Strict-mode schemas.** xsai `tool()` defaults `strict: true`, which forces
+  `additionalProperties: false` but does **not** add optional keys to
+  `required` — a schema OpenAI-strict providers reject. Any tool with optional
+  parameters must declare `strict: false` (e.g. `search_files`, `run_command`,
+  `set_timer`, `list_todos`, `image_journal`), matching `createFlattenedMcpTools`.
+- **Light schemas for weak models.** The hand-authored `stage_widgets` and
+  `stage_project_management` schemas require only `action`; per-action fields
+  are validated at runtime, so the model isn't forced to emit large payloads.
+- **Timer/reminder delays** are armed in chunks to avoid the setTimeout 32-bit
+  overflow (see Reminders above).
+- **`calculate`** enforces per-function arity (e.g. `abs` takes exactly one arg)
+  instead of silently ignoring extras.
+- **`focus_window`/`close_window`** escape PowerShell `-like` wildcards in the
+  match string so `*`/`?`/`[` can't match an arbitrary window.
+- **Store ids** (reminders/todos/memory) use a monotonic per-session counter,
+  not `Date.now()+listLength`, which collided and was reused after removals.
+
 ### Known limitations
 
 - `run_command` runs single commands with no transactional rollback.
@@ -164,7 +187,8 @@ willingness to act. Keep it concise and update it when capability areas change
 
 > When adding a new assistant tool, update this file in the same change:
 > add a row to the tools table, a chat usage example, and note any approval
-> gate or limitation.
+> gate or limitation. If the tool has any optional parameter, declare it
+> `strict: false` (see Reliability & provider compatibility).
 
 ## Recommended MCP servers
 
