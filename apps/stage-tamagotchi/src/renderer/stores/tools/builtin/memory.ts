@@ -1,6 +1,6 @@
 import type { Tool } from '@xsai/shared-chat'
 
-import { normalizeMemoryKind, useChatMemoryStore } from '@proj-airi/stage-ui/stores/chat/memory-store'
+import { normalizeMemoryKind, searchMemories, useChatMemoryStore } from '@proj-airi/stage-ui/stores/chat/memory-store'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
@@ -30,15 +30,20 @@ const tools: Promise<Tool>[] = [
   }),
   tool({
     name: 'recall_memories',
-    description: 'List everything you currently remember for this character (instructions, decisions, events, preferences, facts), each with its kind. Use to check what you already know before answering questions about the user or what they asked you to do.',
-    execute: async () => {
+    // strict:false because `query` is optional.
+    strict: false,
+    description: 'Recall what you remember for this character (instructions, decisions, events, preferences, facts), each with its kind. Pass an optional query to keyword-search your memory — useful for older facts/events that may not be in your current context. Omit query to list everything.',
+    execute: async ({ query }) => {
       const memoryStore = useChatMemoryStore()
       const characterId = activeCharacterId()
       await memoryStore.ensureLoaded(characterId)
-      const memories = memoryStore.list(characterId)
+      const all = memoryStore.list(characterId)
+      const memories = query ? searchMemories(all, query) : all
       return JSON.stringify(memories.map(item => ({ id: item.id, kind: item.kind, text: item.text })))
     },
-    parameters: z.object({}),
+    parameters: z.object({
+      query: z.string().optional().describe('Optional keyword to search memory text; omit to list all'),
+    }),
   }),
   tool({
     name: 'forget',

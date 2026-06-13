@@ -33,7 +33,7 @@ reads are free.
 | `focus_window` | Bring a window to the front by title substring | none | `window-control` |
 | `close_window` | Gracefully close a window by title substring | **dialog** | `window-control` |
 | `remember` | Save a durable fact about the user (per character) | none | `stage-ui` memory store |
-| `recall_memories` | List remembered facts for the active character | none | `stage-ui` memory store |
+| `recall_memories` | Recall memories (optional keyword search) for the active character | none | `stage-ui` memory store |
 | `forget` | Delete a remembered fact by id | none | `stage-ui` memory store |
 | `set_timer` | Start a countdown timer (seconds/minutes); fires like a reminder | none | `renderer` reminders store |
 | `set_reminder` | Schedule a reminder; fires as a proactive chat message + OS notification | none | `renderer` reminders store |
@@ -124,6 +124,16 @@ extractor so paraphrases are not re-saved, caps items per turn, and is gated on
 the `memory` tool category being enabled. The extractor is instructed to skip
 questions, one-off requests, small talk, and secrets.
 
+**Relevance-bounded recall.** As memory grows, the prompt does not dump
+everything: `selectMemoriesForPrompt` always keeps instructions/decisions/
+preferences (low-volume, durable) but only the most recent
+`PROMPT_RECENT_EVENT_FACT_LIMIT` events/facts. The rest stay reachable —
+`recall_memories` takes an optional keyword `query` (`searchMemories`) so the
+model can pull older facts/events on demand. This keeps the prompt bounded
+without an embeddings index. `daily_briefing` also surfaces standing
+`instruction` memories alongside one-off to-dos and upcoming reminders, tying
+recurring requests and tasks into one day-at-a-glance.
+
 ### Capability scoping
 
 Tools are grouped into toggleable categories (`stores/tool-categories.ts`):
@@ -190,8 +200,9 @@ Cross-cutting invariants established during review — keep them when editing to
 - `screenshot` returns a file path, not an inline image — wiring tool-result
   images into the next LLM turn (vision) is a separate, provider-dependent
   feature and is not implemented.
-- Memory facts are plain strings with exact-text dedup; no semantic recall or
-  automatic summarization of old conversations yet.
+- Memory recall is keyword/substring (no embeddings); the prompt keeps all
+  durable items plus the most recent events/facts, and older ones are reachable
+  via `recall_memories` keyword search. Semantic recall is a future step.
 - GUI control is limited to window management (list/focus/close). Mouse and
   keyboard injection are intentionally not implemented — they need native
   modules (nut.js/robotjs) and carry a high misfire risk. The

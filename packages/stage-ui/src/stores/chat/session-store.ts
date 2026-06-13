@@ -9,7 +9,7 @@ import { CONVERSATIONAL_STYLE_PROMPT } from '../../constants/prompts/conversatio
 import { chatSessionsRepo } from '../../database/repos/chat-sessions.repo'
 import { useAuthStore } from '../auth'
 import { useAiriCardStore } from '../modules/airi-card'
-import { formatMemoriesForPrompt, useChatMemoryStore } from './memory-store'
+import { formatMemoriesForPrompt, selectMemoriesForPrompt, useChatMemoryStore } from './memory-store'
 import { mergeLoadedSessionMessages } from './session-message-merge'
 
 export const useChatSessionStore = defineStore('chat-session', () => {
@@ -91,7 +91,7 @@ export const useChatSessionStore = defineStore('chat-session', () => {
     // synchronously from the already-loaded store; the memory tool calls
     // ensureLoaded before writing, and ensureSession refreshes the system
     // message on every send, so newly remembered facts reach the next turn.
-    const memorySection = formatMemoriesForPrompt(memoryStore.list(getCurrentCharacterId()))
+    const memorySection = formatMemoriesForPrompt(selectMemoriesForPrompt(memoryStore.list(getCurrentCharacterId())))
     if (memorySection) {
       content = `${content}\n\n${memorySection}`
     }

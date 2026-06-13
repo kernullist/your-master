@@ -158,6 +158,51 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
   }
 })
 
+/**
+ * How many of the most recent event/fact memories to inject into the prompt.
+ * Instructions/decisions/preferences are always kept (few and important);
+ * events/facts can grow unbounded, so only the most recent are surfaced — the
+ * rest stay reachable via `recall_memories` search. Keeps the prompt bounded
+ * without an index.
+ */
+export const PROMPT_RECENT_EVENT_FACT_LIMIT = 20
+
+/** Kinds always kept in the prompt (low-volume, durable, high-value). */
+const ALWAYS_PROMPTED_KINDS = new Set<MemoryKind>(['instruction', 'decision', 'preference'])
+
+/**
+ * Selects which memories to inject into the system prompt: all
+ * instruction/decision/preference items, plus the most recent N event/fact
+ * items. Returned in stable order (by createdAt asc) so the rendered section
+ * stays byte-stable across sends until memory actually changes.
+ *
+ * Use when:
+ * - Building the prompt memory section for a character that may have many
+ *   facts/events.
+ */
+export function selectMemoriesForPrompt(memories: MemoryItem[], recentLimit = PROMPT_RECENT_EVENT_FACT_LIMIT): MemoryItem[] {
+  const always = memories.filter(item => ALWAYS_PROMPTED_KINDS.has(item.kind))
+  const recent = memories
+    .filter(item => !ALWAYS_PROMPTED_KINDS.has(item.kind))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, recentLimit)
+  return [...always, ...recent].sort((a, b) => a.createdAt - b.createdAt)
+}
+
+/**
+ * Case-insensitive keyword search over memory text.
+ *
+ * Use when:
+ * - The model needs to recall facts/events not currently in the prompt.
+ */
+export function searchMemories(memories: MemoryItem[], query: string): MemoryItem[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) {
+    return memories
+  }
+  return memories.filter(item => item.text.toLowerCase().includes(needle))
+}
+
 /** Heading shown for each memory kind. */
 const KIND_HEADINGS: Record<MemoryKind, string> = {
   instruction: 'Standing instructions from the user',

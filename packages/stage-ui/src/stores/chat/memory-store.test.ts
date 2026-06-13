@@ -1,7 +1,13 @@
+import type { MemoryItem, MemoryKind } from './memory-store'
+
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { formatMemoriesForPrompt, normalizeMemoryKind, useChatMemoryStore } from './memory-store'
+import { formatMemoriesForPrompt, normalizeMemoryKind, searchMemories, selectMemoriesForPrompt, useChatMemoryStore } from './memory-store'
+
+function mem(kind: MemoryKind, text: string, createdAt: number): MemoryItem {
+  return { id: `${kind}-${createdAt}`, kind, text, createdAt }
+}
 
 // In-memory localforage stub: the store only uses getItem/setItem.
 const storage = new Map<string, unknown>()
@@ -43,6 +49,41 @@ describe('formatMemoriesForPrompt', () => {
     // Facts have no date.
     expect(out).toContain('### Facts about the user\n- The user\'s name is 꿀보.')
     expect(out).toContain('### User preferences\n- Prefers Korean')
+  })
+})
+
+describe('selectMemoriesForPrompt', () => {
+  it('keeps all instructions/decisions/preferences and only the most recent events/facts', () => {
+    const items: MemoryItem[] = [
+      mem('instruction', 'do X', 10),
+      mem('decision', 'use Y', 11),
+      mem('preference', 'likes Z', 12),
+      mem('fact', 'old fact', 1),
+      mem('fact', 'new fact', 100),
+      mem('event', 'recent event', 99),
+    ]
+    const selected = selectMemoriesForPrompt(items, 2)
+    const texts = selected.map(item => item.text)
+    // All durable kinds kept.
+    expect(texts).toContain('do X')
+    expect(texts).toContain('use Y')
+    expect(texts).toContain('likes Z')
+    // Only the 2 most recent event/fact kept; the old fact dropped.
+    expect(texts).toContain('new fact')
+    expect(texts).toContain('recent event')
+    expect(texts).not.toContain('old fact')
+    // Output is sorted by createdAt ascending (stable for KV-cache).
+    const times = selected.map(item => item.createdAt)
+    expect(times).toEqual([...times].sort((a, b) => a - b))
+  })
+})
+
+describe('searchMemories', () => {
+  it('filters by case-insensitive substring; empty query returns all', () => {
+    const items = [mem('fact', 'Likes green tea', 1), mem('fact', 'Has a dog', 2)]
+    expect(searchMemories(items, 'TEA').map(item => item.text)).toEqual(['Likes green tea'])
+    expect(searchMemories(items, '  ')).toHaveLength(2)
+    expect(searchMemories(items, 'cat')).toHaveLength(0)
   })
 })
 
