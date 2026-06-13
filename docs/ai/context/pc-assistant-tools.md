@@ -113,6 +113,17 @@ string (KV-cache stable; dates are absolute `YYYY-MM-DD`, not relative, to keep
 the prefix stable). Pre-`kind` records migrate to `fact` on load. Secrets must
 not be stored (the conversational-style prompt instructs the model accordingly).
 
+**Automatic capture.** Besides the explicit `remember` tool, after every chat
+turn a background extraction (`stores/memory-capture.ts`, fired from
+`chat-sync.ts` `executeIngest`) asks the model to pull durable
+instructions/decisions/events/preferences/facts from the just-finished turn and
+stores any new ones — so important things are retained even when the model
+forgets to call `remember`. It is non-blocking (does not delay the reply),
+best-effort (never throws), passes the user's existing memories to the
+extractor so paraphrases are not re-saved, caps items per turn, and is gated on
+the `memory` tool category being enabled. The extractor is instructed to skip
+questions, one-off requests, small talk, and secrets.
+
 ### Capability scoping
 
 Tools are grouped into toggleable categories (`stores/tool-categories.ts`):

@@ -13,6 +13,7 @@ import { useChatOrchestratorStore } from '@proj-airi/stage-ui/stores/chat'
 import { useChatMaintenanceStore } from '@proj-airi/stage-ui/stores/chat/maintenance'
 import { useChatSessionStore } from '@proj-airi/stage-ui/stores/chat/session-store'
 import { useChatStreamStore } from '@proj-airi/stage-ui/stores/chat/stream-store'
+import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { useConsciousnessStore } from '@proj-airi/stage-ui/stores/modules/consciousness'
 import { useProvidersStore } from '@proj-airi/stage-ui/stores/providers'
 import { defineStore, storeToRefs } from 'pinia'
@@ -20,6 +21,7 @@ import { ref, watch } from 'vue'
 
 import { projectManagementWorkItemStatusChanged } from '../../shared/eventa'
 import { useAssistantToolsSettings } from './assistant-tools-settings'
+import { extractAndStoreMemories } from './memory-capture'
 import { calculatorTools } from './tools/builtin/calculator'
 import { commandExecTools } from './tools/builtin/command-exec'
 import { dailyBriefingTools } from './tools/builtin/daily-briefing'
@@ -626,6 +628,53 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       input: payload.input,
       tools: resolveTools(payload.toolset),
     }, payload.sessionId)
+
+    // Fire-and-forget automatic memory capture: extract durable
+    // instructions/decisions/events from this turn so they are retained even
+    // when the model does not call `remember` itself. Non-blocking; gated on
+    // the memory category being enabled.
+    void captureTurnMemories(chatProvider, modelId, payload.text, payload.sessionId)
+  }
+
+  /**
+   * Reads the latest assistant reply text for a session (string content or the
+   * concatenation of text slices), for memory extraction.
+   */
+  function lastAssistantText(sessionId: string): string {
+    const messages = chatSession.getSessionMessages(sessionId)
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.role !== 'assistant') {
+        continue
+      }
+      if (typeof message.content === 'string' && message.content.trim()) {
+        return message.content
+      }
+      const slices = (message as { slices?: { type: string, text?: string }[] }).slices
+      if (Array.isArray(slices)) {
+        return slices.filter(slice => slice.type === 'text').map(slice => slice.text ?? '').join('')
+      }
+      return ''
+    }
+    return ''
+  }
+
+  function captureTurnMemories(chatProvider: ChatProvider, modelId: string, userText: string, sessionId?: string) {
+    if (!useAssistantToolsSettings().isEnabled('memory')) {
+      return
+    }
+    const resolvedSessionId = sessionId || chatSession.activeSessionId
+    const characterId = useAiriCardStore().activeCardId || 'default'
+    const assistantText = lastAssistantText(resolvedSessionId)
+
+    void extractAndStoreMemories({
+      chatProvider,
+      modelId,
+      characterId,
+      userText,
+      assistantText,
+      now: Date.now(),
+    }).catch(() => {})
   }
 
   async function executeRetry(payload: RetryCommandPayload) {
