@@ -16,6 +16,7 @@ import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
 import { projectManagementWorkItemStatusChanged } from '../../shared/eventa'
+import { calculatorTools } from './tools/builtin/calculator'
 import { commandExecTools } from './tools/builtin/command-exec'
 import { desktopIoTools } from './tools/builtin/desktop-io'
 import { fileAccessTools } from './tools/builtin/file-access'
@@ -550,11 +551,11 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
       'widgets': async () => {
-        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools()])
-        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td]
+        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools(), calculatorTools()])
+        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc]
       },
       'artistry': async () => {
-        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td] = await Promise.all([
+        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc] = await Promise.all([
           imageJournalTools(),
           widgetsTools(),
           weatherTools(),
@@ -567,8 +568,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           routineTools(),
           windowControlTools(),
           todoTools(),
+          calculatorTools(),
         ])
-        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td]
+        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc]
       },
       'project-management': async () => {
         return projectManagementTools()

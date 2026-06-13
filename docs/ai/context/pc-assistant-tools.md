@@ -24,6 +24,8 @@ reads are free.
 | `save_routine` | Save a named multi-step routine (macro) | none | `renderer` routines store |
 | `run_routine` | Return a saved routine's steps to carry out with other tools | none | `renderer` routines store |
 | `list_routines` / `delete_routine` | List or delete saved routines | none | `renderer` routines store |
+| `calculate` | Evaluate an arithmetic expression exactly (no eval) | none | `renderer` calc |
+| `convert_units` | Convert length/mass/data/time/temperature units | none | `renderer` calc |
 | `list_windows` | List open windows (process + title) | none | `window-control` |
 | `focus_window` | Bring a window to the front by title substring | none | `window-control` |
 | `close_window` | Gracefully close a window by title substring | **dialog** | `window-control` |
@@ -67,6 +69,8 @@ What the user can say in chat to trigger each tool:
 | "장보기 할 일에 추가해줘" | `add_todo` |
 | "내 할 일 뭐 있어?" | `list_todos` |
 | "우유 사기 완료했어" | `complete_todo` (text match) |
+| "1234 곱하기 56 나누기 7 계산해줘" | `calculate` |
+| "100 화씨는 섭씨로 몇 도야?" | `convert_units` |
 | "아침 루틴 저장해줘: 날씨 확인하고 할 일 알려줘" | `save_routine` |
 | "아침 루틴 실행해줘" | `run_routine` → carries out the steps with other tools |
 | "지금 열린 창 뭐 있어?" | `list_windows` |
