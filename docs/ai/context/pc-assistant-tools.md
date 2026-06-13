@@ -19,6 +19,8 @@ reads are free.
 | `screenshot` | Capture primary screen to a PNG under Pictures, return its path | none | `desktop-io` |
 | `system_info` | Read CPU/memory usage, OS info, hostname, uptime | none | `system-info` |
 | `daily_briefing` | Gather date/time + pending to-dos + upcoming reminders for a day-at-a-glance | none | `renderer` |
+| `list_tool_categories` | List tool categories and whether each is enabled | none | `renderer` tool scoping |
+| `set_tool_category` | Enable/disable a tool category (capability scoping) | none | `renderer` tool scoping |
 | `add_todo` | Add a personal to-do item | none | `renderer` todos store |
 | `list_todos` | List to-do items (pending by default) | none | `renderer` todos store |
 | `complete_todo` / `remove_todo` | Mark done / remove a to-do by id or text | none | `renderer` todos store |
@@ -70,6 +72,8 @@ What the user can say in chat to trigger each tool:
 | "예약된 알림 뭐 있어?" | `list_reminders` |
 | "그 알림 취소해줘" | `cancel_reminder` |
 | "오늘 하루 브리핑해줘" / "내 하루 어때?" | `daily_briefing` (+ weather/news) |
+| "프로젝트 관리 도구는 꺼줘" | `set_tool_category` (project off) |
+| "넌 어떤 기능들을 켤 수 있어?" | `list_tool_categories` |
 | "장보기 할 일에 추가해줘" | `add_todo` |
 | "내 할 일 뭐 있어?" | `list_todos` |
 | "우유 사기 완료했어" | `complete_todo` (text match) |
@@ -102,6 +106,18 @@ message as a `## What you remember about the user` section
 a freshly remembered fact reaches the next turn. Empty memory yields an empty
 string (KV-cache stable). Secrets/sensitive data must not be stored (the
 conversational-style prompt instructs the model accordingly).
+
+### Capability scoping
+
+Tools are grouped into toggleable categories (`stores/tool-categories.ts`):
+`files`, `system`, `productivity`, `memory`, `math`, `web`, `creative`,
+`project`. `chat-sync.ts`'s `resolveTools` only assembles the **enabled**
+categories (plus the always-on scoping tools), so weak local models are not
+flooded with every tool at once. State persists in
+`stores/assistant-tools-settings.ts` (localStorage). Defaults: everything on
+except `project` (git-bound work-item management — not a personal-assistant
+feature). The user controls it conversationally via `list_tool_categories` /
+`set_tool_category` (no settings UI needed); changes apply on the next message.
 
 ### Capability discovery
 

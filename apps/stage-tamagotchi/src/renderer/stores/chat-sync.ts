@@ -3,6 +3,9 @@ import type { WorkItem, WorkItemStatus } from '@proj-airi/stage-projects'
 import type { ChatHistoryItem, StreamingAssistantMessage } from '@proj-airi/stage-ui/types/chat'
 import type { ChatSessionMeta } from '@proj-airi/stage-ui/types/chat-session'
 import type { ChatProvider } from '@xsai-ext/providers/utils'
+import type { Tool } from '@xsai/shared-chat'
+
+import type { ToolCategoryId } from './tool-categories'
 
 import { errorMessageFrom } from '@moeru/std'
 import { getElectronEventaContext } from '@proj-airi/electron-vueuse'
@@ -16,6 +19,7 @@ import { defineStore, storeToRefs } from 'pinia'
 import { ref, watch } from 'vue'
 
 import { projectManagementWorkItemStatusChanged } from '../../shared/eventa'
+import { useAssistantToolsSettings } from './assistant-tools-settings'
 import { calculatorTools } from './tools/builtin/calculator'
 import { commandExecTools } from './tools/builtin/command-exec'
 import { dailyBriefingTools } from './tools/builtin/daily-briefing'
@@ -28,6 +32,7 @@ import { reminderTools } from './tools/builtin/reminders'
 import { routineTools } from './tools/builtin/routines'
 import { timerTools } from './tools/builtin/timer'
 import { todoTools } from './tools/builtin/todos'
+import { toolScopingTools } from './tools/builtin/tool-scoping'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
 import { windowControlTools } from './tools/builtin/window-control'
@@ -550,42 +555,31 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
     chatStream.streamingMessage = snapshot.streamingMessage
   }
 
-  function resolveTools(toolset?: ToolsetId) {
-    const toolsetRegistry: Record<string, () => Promise<any[]>> = {
-      'widgets': async () => {
-        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr, db] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools(), calculatorTools(), timerTools(), dailyBriefingTools()])
-        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr, ...db]
-      },
-      'artistry': async () => {
-        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr, db] = await Promise.all([
-          imageJournalTools(),
-          widgetsTools(),
-          weatherTools(),
-          projectManagementTools(),
-          fileAccessTools(),
-          commandExecTools(),
-          desktopIoTools(),
-          memoryTools(),
-          reminderTools(),
-          routineTools(),
-          windowControlTools(),
-          todoTools(),
-          calculatorTools(),
-          timerTools(),
-          dailyBriefingTools(),
-        ])
-        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr, ...db]
-      },
-      'project-management': async () => {
-        return projectManagementTools()
-      },
-    }
+  // Each tool category maps to the builders that produce its tools. Capability
+  // scoping (assistant-tools-settings) decides which categories are offered to
+  // the model, so weak local models are not flooded with every tool at once.
+  // The legacy `toolset` param is retained for the call sites but no longer
+  // selects tools — scoping is settings-driven and uniform.
+  const categoryBuilders: Record<ToolCategoryId, Array<() => Promise<Tool[]>>> = {
+    files: [fileAccessTools],
+    system: [commandExecTools, desktopIoTools, windowControlTools],
+    productivity: [todoTools, reminderTools, timerTools, routineTools, dailyBriefingTools],
+    memory: [memoryTools],
+    math: [calculatorTools],
+    web: [weatherTools],
+    creative: [imageJournalTools, widgetsTools],
+    project: [projectManagementTools],
+  }
 
-    if (toolset && toolsetRegistry[toolset]) {
-      return toolsetRegistry[toolset]
+  function resolveTools(_toolset?: ToolsetId) {
+    return async () => {
+      const settings = useAssistantToolsSettings()
+      const builders = settings.enabledCategoryIds().flatMap(id => categoryBuilders[id])
+      // Self-scoping tools are always offered so the user can re-enable a
+      // category that was turned off.
+      const results = await Promise.all([...builders, toolScopingTools].map(build => build()))
+      return results.flat()
     }
-
-    return projectManagementTools
   }
 
   function createIngestAcceptanceSnapshot(payload: IngestCommandPayload): IngestAcceptanceSnapshot {
