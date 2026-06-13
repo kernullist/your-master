@@ -133,9 +133,14 @@ willingness to act. Keep it concise and update it when capability areas change
 
 - **Reads are free, every action is gated or blocked.** `file_write` and
   `run_command` always show a native dialog whose default button is *Deny*.
-- `file_write` blocks OS/program directories; `run_command` blocks an explicit
-  list of destructive commands (format, recursive delete, registry/firewall/AV
-  changes, shutdown, shadow-copy deletion) before the dialog even appears.
+- `file_write`/`file_edit` block writes into OS/program directories; the target
+  is first resolved with `realpath` (following symlinks/junctions) and stripped
+  of trailing dots/spaces so canonicalization tricks cannot bypass the
+  blocklist. `run_command` blocks an explicit list of destructive commands
+  (format, recursive delete incl. PowerShell aliases, registry/firewall/AV
+  changes, shutdown, shadow-copy deletion, encoded PowerShell) before the dialog.
+  These denylists are best-effort defense-in-depth behind the approval dialog,
+  not a hard sandbox boundary.
 - Policy logic lives in pure, unit-tested `policy.ts` modules per service.
 
 ### Known limitations

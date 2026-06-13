@@ -242,20 +242,14 @@ const projectManagementParams = {
       enum: ['todo', 'in_progress', 'in_review', 'done', 'blocked', null],
     },
   },
+  // NOTICE:
+  // Only `action` is required; each action's required fields (e.g. rootPath +
+  // issuePrefix for register_project) are validated at execution time. Forcing
+  // all 13 fields required made weak models emit large, error-prone payloads
+  // even for `list_projects`. The tool is created with strict:false so this
+  // partial-required schema is accepted by strict providers.
   required: [
     'action',
-    'rootPath',
-    'issuePrefix',
-    'projectId',
-    'identifier',
-    'title',
-    'goal',
-    'acceptanceCriteria',
-    'commitPrefix',
-    'allowDuplicateIdentifier',
-    'allowDirtyWorktree',
-    'workItemId',
-    'status',
   ],
   additionalProperties: false,
 } satisfies JsonSchema
@@ -679,6 +673,9 @@ export async function executeProjectManagementAction(
 const tools: Tool[] = [
   rawTool({
     name: 'stage_project_management',
+    // strict:false so the partial-required schema (only `action`) is accepted;
+    // per-action fields are validated in executeProjectManagementAction.
+    strict: false,
     description: 'Manage AIRI local project work: register projects, list projects, create/list/update/delete work items, and open the local board.',
     execute: params => executeProjectManagementAction(params as ProjectManagementActionInput),
     parameters: projectManagementParams,

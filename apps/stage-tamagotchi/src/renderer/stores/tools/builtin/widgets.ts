@@ -147,18 +147,18 @@ const widgetParams = {
     ttlSeconds: {
       type: 'integer',
       minimum: 0,
-      maximum: Number.MAX_SAFE_INTEGER,
       description: 'Auto-close timer in seconds (spawn only)',
     },
   },
+  // NOTICE:
+  // Only `action` is required; per-action requirements (e.g. componentName for
+  // spawn, id for update/remove) are validated at runtime in
+  // executeWidgetAction. Forcing all fields required made weak models supply a
+  // full 6-field windowSize object and componentProps even to `remove`/`clear`,
+  // causing malformed calls. The tool is created with strict:false so this
+  // partial-required schema is accepted by strict providers.
   required: [
     'action',
-    'id',
-    'componentName',
-    'componentProps',
-    'size',
-    'windowSize',
-    'ttlSeconds',
   ],
   additionalProperties: false,
 } satisfies JsonSchema
@@ -305,6 +305,9 @@ export async function executeWidgetAction(
 const tools: Tool[] = [
   rawTool({
     name: 'stage_widgets',
+    // strict:false so the partial-required schema (only `action`) is accepted;
+    // per-action fields are validated at runtime in executeWidgetAction.
+    strict: false,
     description: 'Manage overlay widgets in the Stage desktop app (spawn, update, remove, clear, or open the widgets window).',
     execute: params => executeWidgetAction(params as WidgetActionInput),
     parameters: widgetParams,

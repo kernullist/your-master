@@ -37,17 +37,6 @@ interface CurlJsonResponse<T> {
   status: number
 }
 
-function getObjectSchema(schema?: JsonSchema) {
-  if (!schema)
-    return undefined
-
-  if (schema.type === 'object' || (Array.isArray(schema.type) && schema.type.includes('object')))
-    return schema
-
-  const candidates = [...(schema.anyOf ?? []), ...(schema.oneOf ?? [])]
-  return candidates.find((candidate): candidate is JsonSchema => Boolean(candidate && typeof candidate === 'object' && !Array.isArray(candidate) && candidate.type === 'object'))
-}
-
 /**
  * Normalizes the configured AIHubMix base URL to a trailing-slash form.
  *
@@ -206,41 +195,24 @@ async function getStageWidgetsTool(): Promise<Tool> {
 
 describe('widgets tool helpers', () => {
   describe('provider-facing schema reproduction', () => {
-    it('uses a provider-safe windowSize schema for strict tool validation', async () => {
+    it('requires only `action` and is created strict:false to ease weak models', async () => {
       const stageWidgetsTool = await getStageWidgetsTool()
       const schema = stageWidgetsTool.function.parameters as JsonSchema
-      const windowSize = getObjectSchema(schema.properties?.windowSize as JsonSchema | undefined)
 
-      // ROOT CAUSE:
+      // ROOT CAUSE (updated):
       //
-      // OpenAI-compatible providers that enforce strict tool schemas require object
-      // schemas to list every property key in `required`, even when the caller thinks
-      // some nested fields are optional.
-      //
-      // The fixed provider-facing schema keeps the root `windowSize` field required and
-      // nullable, then requires every nested key while allowing optional constraints to
-      // be expressed as `number | null`. That preserves the runtime behavior while
-      // satisfying strict tool validators that compare `required` against `properties`.
-      expect(windowSize).toBeDefined()
-      expect(windowSize?.additionalProperties).toBe(false)
-      expect(Object.keys(windowSize?.properties ?? {})).toEqual([
-        'width',
-        'height',
-        'minWidth',
-        'minHeight',
-        'maxWidth',
-        'maxHeight',
-      ])
-      expect(schema.required).toContain('windowSize')
-      expect(windowSize?.required).toEqual([
-        'width',
-        'height',
-        'minWidth',
-        'minHeight',
-        'maxWidth',
-        'maxHeight',
-      ])
-      expect(windowSize?.required).toEqual(Object.keys(windowSize?.properties ?? {}))
+      // Previously every field was in `required` to satisfy strict providers,
+      // which forced weak models to supply a full 6-field windowSize object and
+      // componentProps even to `remove`/`clear`/`open` — causing malformed
+      // calls. Now only `action` is required and per-action fields are validated
+      // at runtime in executeWidgetAction; the tool is declared strict:false so
+      // a partial-required schema is still accepted by strict providers.
+      expect(stageWidgetsTool.function.strict).toBe(false)
+      expect(schema.required).toEqual(['action'])
+      expect(schema.additionalProperties).toBe(false)
+      // All actionable properties are still present for the model to use.
+      expect(Object.keys(schema.properties ?? {})).toContain('windowSize')
+      expect(Object.keys(schema.properties ?? {})).toContain('componentName')
     })
 
     describe('live AIHubMix repro', () => {

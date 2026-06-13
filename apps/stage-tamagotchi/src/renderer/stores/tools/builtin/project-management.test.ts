@@ -421,7 +421,7 @@ describe('project management built-in tool', () => {
     expect(result.length).toBeLessThan(700)
   })
 
-  it('exposes a provider-safe strict object schema', async () => {
+  it('requires only `action` and is created strict:false to ease weak models', async () => {
     const tools = await projectManagementTools()
     const tool = tools.find(item => item.function.name === 'stage_project_management')
     const schema = tool?.function.parameters as JsonSchema | undefined
@@ -430,8 +430,11 @@ describe('project management built-in tool', () => {
       type: 'object',
       additionalProperties: false,
     })
-    expect(schema?.required).toContain('action')
-    expect(schema?.required).toContain('status')
+    // Previously all 13 fields were required (heavy for weak models); now only
+    // `action` is, with per-action fields validated at runtime. strict:false
+    // keeps the partial-required schema acceptable to strict providers.
+    expect(tool?.function.strict).toBe(false)
+    expect(schema?.required).toEqual(['action'])
     expect(schema?.properties?.action).toMatchObject({
       enum: expect.arrayContaining(['summarize_progress']),
     })

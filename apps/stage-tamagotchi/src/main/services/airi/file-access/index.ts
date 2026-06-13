@@ -7,8 +7,8 @@ import type {
 } from '../../../../shared/eventa'
 
 import { Buffer } from 'node:buffer'
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 
 import { useLogg } from '@guiiai/logg'
 import { defineInvokeHandler } from '@moeru/eventa'
@@ -62,6 +62,38 @@ export function createFileAccessService(params: {
   context: ReturnType<typeof createContext>['context']
 }) {
   const log = useLogg('main/file-access').useGlobalConfig()
+
+  /**
+   * Resolves a path to its real on-disk location for the write blocklist check,
+   * following symlinks/junctions. For a not-yet-existing target, the nearest
+   * existing ancestor is realpath'd and the remaining segments re-appended.
+   *
+   * NOTICE:
+   * writeBlockReason alone is a string-prefix check and is bypassable via
+   * directory junctions/symlinks (e.g. C:\Users\me\sys -> C:\Windows\System32)
+   * and 8.3 short names. Canonicalizing here closes those gaps before the
+   * blocklist check. Falls back to the original path if realpath fails entirely.
+   */
+  async function resolveForBlockCheck(requestPath: string): Promise<string> {
+    let current = requestPath
+    const tail: string[] = []
+    // Walk up until an existing ancestor is found; realpath that, then re-join.
+    for (let depth = 0; depth < 64; depth += 1) {
+      try {
+        const real = await realpath(current)
+        return tail.length ? join(real, ...tail.reverse()) : real
+      }
+      catch {
+        const parent = dirname(current)
+        if (parent === current) {
+          return requestPath
+        }
+        tail.push(basename(current))
+        current = parent
+      }
+    }
+    return requestPath
+  }
 
   defineInvokeHandler(params.context, electronFilesRead, async (payload): Promise<ElectronFileReadResult> => {
     const requestPath = payload?.path ?? ''
@@ -178,7 +210,7 @@ export function createFileAccessService(params: {
       return { ok: false, message: invalid }
     }
 
-    const blocked = writeBlockReason(requestPath)
+    const blocked = writeBlockReason(await resolveForBlockCheck(requestPath))
     if (blocked) {
       return { ok: false, message: blocked }
     }
@@ -220,7 +252,7 @@ export function createFileAccessService(params: {
       return { ok: false, message: invalid }
     }
 
-    const blocked = writeBlockReason(requestPath)
+    const blocked = writeBlockReason(await resolveForBlockCheck(requestPath))
     if (blocked) {
       return { ok: false, message: blocked }
     }
