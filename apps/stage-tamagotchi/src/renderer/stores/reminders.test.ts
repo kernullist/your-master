@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { MAX_REMINDER_DELAY_MS, reminderDelayMs, validateReminderMinutes } from './reminders'
+import { MAX_REMINDER_DELAY_MS, reminderDelayMs, timerDurationMs, validateReminderMinutes, validateTimerDuration } from './reminders'
 
 describe('reminderDelayMs', () => {
   it('returns the gap until the due time', () => {
@@ -28,5 +28,28 @@ describe('validateReminderMinutes', () => {
     expect(validateReminderMinutes(30)).toBeUndefined()
     expect(validateReminderMinutes(0.5)).toBeUndefined()
     expect(validateReminderMinutes(60 * 24)).toBeUndefined()
+  })
+})
+
+describe('timerDurationMs', () => {
+  it('converts seconds and minutes', () => {
+    expect(timerDurationMs(30, 'seconds')).toBe(30_000)
+    expect(timerDurationMs(10, 'minutes')).toBe(600_000)
+  })
+})
+
+describe('validateTimerDuration', () => {
+  it('rejects non-positive durations', () => {
+    expect(validateTimerDuration(0, 'seconds')).toContain('positive')
+    expect(validateTimerDuration(-1, 'minutes')).toContain('positive')
+  })
+
+  it('rejects durations beyond the scheduler bound', () => {
+    expect(validateTimerDuration(MAX_REMINDER_DELAY_MS / 1000 + 1, 'seconds')).toContain('too long')
+  })
+
+  it('accepts short and ordinary timers', () => {
+    expect(validateTimerDuration(30, 'seconds')).toBeUndefined()
+    expect(validateTimerDuration(25, 'minutes')).toBeUndefined()
   })
 })

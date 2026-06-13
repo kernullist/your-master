@@ -25,6 +25,7 @@ import { memoryTools } from './tools/builtin/memory'
 import { executeProjectManagementAction, projectManagementTools } from './tools/builtin/project-management'
 import { reminderTools } from './tools/builtin/reminders'
 import { routineTools } from './tools/builtin/routines'
+import { timerTools } from './tools/builtin/timer'
 import { todoTools } from './tools/builtin/todos'
 import { weatherTools } from './tools/builtin/weather'
 import { widgetsTools } from './tools/builtin/widgets'
@@ -551,11 +552,11 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
   function resolveTools(toolset?: ToolsetId) {
     const toolsetRegistry: Record<string, () => Promise<any[]>> = {
       'widgets': async () => {
-        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools(), calculatorTools()])
-        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc]
+        const [w, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr] = await Promise.all([widgetsTools(), weatherTools(), projectManagementTools(), fileAccessTools(), commandExecTools(), desktopIoTools(), memoryTools(), reminderTools(), routineTools(), windowControlTools(), todoTools(), calculatorTools(), timerTools()])
+        return [...w, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr]
       },
       'artistry': async () => {
-        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc] = await Promise.all([
+        const [ai, wi, we, pm, fa, ce, dio, mem, rem, rt, wc, td, calc, tmr] = await Promise.all([
           imageJournalTools(),
           widgetsTools(),
           weatherTools(),
@@ -569,8 +570,9 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
           windowControlTools(),
           todoTools(),
           calculatorTools(),
+          timerTools(),
         ])
-        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc]
+        return [...ai, ...wi, ...we, ...pm, ...fa, ...ce, ...dio, ...mem, ...rem, ...rt, ...wc, ...td, ...calc, ...tmr]
       },
       'project-management': async () => {
         return projectManagementTools()

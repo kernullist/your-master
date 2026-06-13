@@ -51,6 +51,35 @@ export function validateReminderMinutes(minutes: number): string | undefined {
 }
 
 /**
+ * Converts a timer duration to milliseconds.
+ *
+ * Before:
+ * - (10, 'minutes') / (30, 'seconds')
+ *
+ * After:
+ * - 600000 / 30000
+ */
+export function timerDurationMs(value: number, unit: 'seconds' | 'minutes'): number {
+  return unit === 'minutes' ? value * 60 * 1000 : value * 1000
+}
+
+/**
+ * Validates a timer duration.
+ *
+ * Returns an error message, or undefined when acceptable. Shares the reminder
+ * scheduler's upper bound since a timer is a countdown reminder.
+ */
+export function validateTimerDuration(value: number, unit: 'seconds' | 'minutes'): string | undefined {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 'duration must be a positive number'
+  }
+  if (timerDurationMs(value, unit) > MAX_REMINDER_DELAY_MS) {
+    return 'timer is too long (max ~30 days)'
+  }
+  return undefined
+}
+
+/**
  * Reminder scheduler. Reminders persist to localStorage and survive reloads;
  * on init, pending reminders are re-armed and past-due ones fire shortly after.
  *
