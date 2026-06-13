@@ -37,6 +37,30 @@ interface McpServerSession {
   config: ElectronMcpStdioServerConfig
 }
 
+/** A live MCP connection produced by a {@link ConnectServerFn}. */
+interface McpConnectResult {
+  client: Client
+  transport: StdioClientTransport
+  /** OS pid of the spawned server process, or null when unavailable. */
+  pid: number | null
+}
+
+/**
+ * Connects to one MCP server and returns the live client/transport. Injected
+ * via {@link McpStdioManagerOptions} so tests can simulate slow/failing servers
+ * without spawning real child processes.
+ */
+type ConnectServerFn = (name: string, config: ElectronMcpStdioServerConfig) => Promise<McpConnectResult>
+
+/** Options for {@link createMcpStdioManager}. */
+export interface McpStdioManagerOptions {
+  /**
+   * Overrides how a server is connected. Defaults to spawning a real
+   * `StdioClientTransport` with a {@link mcpConnectTimeoutMsec} guard.
+   */
+  connectServer?: ConnectServerFn
+}
+
 export interface McpStdioManager {
   ensureConfigFile: () => Promise<{ path: string }>
   openConfigFile: () => Promise<{ path: string }>
@@ -65,6 +89,17 @@ const defaultMcpConfig: ElectronMcpStdioConfigFile = {
 const mcpRequestTimeoutMsec = 10_000
 const mcpRequestMaxTotalTimeoutMsec = 15_000
 
+/**
+ * Max time to wait for a single MCP server to connect (process spawn + the MCP
+ * initialize handshake). npx-based servers (e.g. `npx -y pkg@latest`) cold-start
+ * slowly because npx re-resolves the package version from the registry on every
+ * launch, so this is intentionally generous; it exists only so a truly hung or
+ * unreachable server cannot keep a child process pending forever. Startup does
+ * not block on connect (see {@link setupMcpStdioManager}), so a long connect
+ * never delays the app window.
+ */
+const mcpConnectTimeoutMsec = 60_000
+
 // NOTICE: parseQualifiedToolName / resolveFallbackToolName previously lived
 // here; they moved to `./tool-name` (pure, electron-free) so they can be
 // unit-tested together with the new resolveRequestedToolName fuzzy matcher.
@@ -75,6 +110,36 @@ function stringifyError(error: unknown) {
   }
 
   return String(error)
+}
+
+/**
+ * Rejects with an Error(`message`) if `promise` does not settle within `ms`;
+ * otherwise resolves/rejects with the original outcome. The timer is always
+ * cleared so a settled promise never keeps the event loop alive.
+ *
+ * Use when:
+ * - Bounding an external operation (process spawn, network handshake) that can
+ *   otherwise hang indefinitely.
+ *
+ * Expects:
+ * - `ms` is a positive timeout in milliseconds.
+ *
+ * Returns:
+ * - The original promise's resolved value, or throws Error(`message`) on timeout.
+ */
+export async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  }
+  finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
 }
 
 function getConfigPath() {
@@ -90,7 +155,7 @@ async function closeSession(session: McpServerSession) {
   }
 }
 
-export function createMcpStdioManager(): McpStdioManager {
+export function createMcpStdioManager(options: McpStdioManagerOptions = {}): McpStdioManager {
   const log = useLogg('main/mcp-stdio').useGlobalConfig()
   const sessions = new Map<string, McpServerSession>()
   const runtimeStatuses = new Map<string, ElectronMcpStdioServerRuntimeStatus>()
@@ -149,7 +214,9 @@ export function createMcpStdioManager(): McpStdioManager {
     }
   }
 
-  const startServer = async (name: string, config: ElectronMcpStdioServerConfig) => {
+  // Real connector: spawn the stdio server and run the MCP handshake, bounded
+  // by mcpConnectTimeoutMsec so a hung server cannot leave a child pending.
+  const defaultConnectServer: ConnectServerFn = async (name, config) => {
     const transport = new StdioClientTransport({
       command: config.command,
       args: config.args ?? [],
@@ -163,26 +230,40 @@ export function createMcpStdioManager(): McpStdioManager {
     })
 
     try {
-      await client.connect(transport)
-      transport.stderr?.on('data', (data) => {
-        const text = data.toString('utf-8').trim()
-        if (text) {
-          log.withFields({ serverName: name }).warn(text)
-        }
-      })
-      sessions.set(name, { client, transport, config })
-      setRuntimeStatus({
-        name,
-        state: 'running',
-        command: config.command,
-        args: config.args ?? [],
-        pid: transport.pid,
-      })
+      await withTimeout(
+        client.connect(transport),
+        mcpConnectTimeoutMsec,
+        `mcp server "${name}" connect timed out after ${mcpConnectTimeoutMsec}ms`,
+      )
     }
     catch (error) {
+      // On failure or timeout, tear down the spawned process so it does not leak.
       await transport.close().catch(() => {})
       throw error
     }
+
+    transport.stderr?.on('data', (data) => {
+      const text = data.toString('utf-8').trim()
+      if (text) {
+        log.withFields({ serverName: name }).warn(text)
+      }
+    })
+
+    return { client, transport, pid: transport.pid }
+  }
+
+  const connectServer = options.connectServer ?? defaultConnectServer
+
+  const startServer = async (name: string, config: ElectronMcpStdioServerConfig) => {
+    const { client, transport, pid } = await connectServer(name, config)
+    sessions.set(name, { client, transport, config })
+    setRuntimeStatus({
+      name,
+      state: 'running',
+      command: config.command,
+      args: config.args ?? [],
+      pid,
+    })
   }
 
   const applyAndRestart = async (): Promise<ElectronMcpStdioApplyResult> => {
@@ -199,7 +280,12 @@ export function createMcpStdioManager(): McpStdioManager {
       skipped: [],
     }
 
-    for (const [name, server] of Object.entries(config.mcpServers)) {
+    // Start every enabled server CONCURRENTLY. Previously sequential, so total
+    // startup time was the sum of each server's spawn+handshake; a single slow
+    // npx server (~30s) delayed all the others. Failures stay isolated per
+    // server (each is independently try/caught), so one bad server never aborts
+    // the rest. Push order is now nondeterministic; callers sort if they care.
+    await Promise.all(Object.entries(config.mcpServers).map(async ([name, server]) => {
       if (server.enabled === false) {
         result.skipped.push({ name, reason: 'disabled' })
         setRuntimeStatus({
@@ -209,7 +295,7 @@ export function createMcpStdioManager(): McpStdioManager {
           args: server.args ?? [],
           pid: null,
         })
-        continue
+        return
       }
 
       try {
@@ -228,7 +314,7 @@ export function createMcpStdioManager(): McpStdioManager {
           lastError: message,
         })
       }
-    }
+    }))
 
     updatedAt = Date.now()
 
@@ -368,12 +454,23 @@ export async function setupMcpStdioManager() {
 
   await manager.ensureConfigFile()
 
-  try {
-    await manager.applyAndRestart()
-  }
-  catch (error) {
-    log.withError(error).warn('failed to apply mcp stdio config during startup')
-  }
+  // NOTICE:
+  // Connect MCP servers in the BACKGROUND; do NOT await here. npx-based servers
+  // (e.g. `npx -y tavily-mcp@latest`) cold-start in ~30s because npx re-resolves
+  // the package from the registry on every launch. Awaiting previously blocked
+  // the whole DI graph (windows:chat/settings/main depend on this module), so
+  // the app window did not appear until every server connected, and a hung
+  // server hung startup indefinitely. Tools come online when ready and are
+  // listed on demand via electronMcpListTools.
+  void manager.applyAndRestart()
+    .then((result) => {
+      log
+        .withFields({ started: result.started.length, failed: result.failed.length, skipped: result.skipped.length })
+        .log('mcp stdio servers initialized')
+    })
+    .catch((error) => {
+      log.withError(error).warn('failed to apply mcp stdio config during startup')
+    })
 
   return manager
 }
