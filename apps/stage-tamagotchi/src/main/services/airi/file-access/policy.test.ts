@@ -43,6 +43,13 @@ describe('writeBlockReason', () => {
     expect(writeBlockReason('C:\\Users\\me\\..\\..\\Windows\\evil.dll')).toContain('blocked')
   })
 
+  it('blocks trailing-dot/space evasion that Windows strips to the real path', () => {
+    // "C:\Windows.\System32\x" resolves into the real C:\Windows on Windows.
+    expect(writeBlockReason('C:\\Windows.\\System32\\x.dll')).toContain('blocked')
+    expect(writeBlockReason('C:\\Windows \\System32\\x.dll')).toContain('blocked')
+    expect(writeBlockReason('C:\\Program Files.\\app\\x.exe')).toContain('blocked')
+  })
+
   it('allows user directories', () => {
     expect(writeBlockReason('C:\\Users\\me\\Documents\\todo.md')).toBeUndefined()
     expect(writeBlockReason('F:\\kernullist\\notes.txt')).toBeUndefined()

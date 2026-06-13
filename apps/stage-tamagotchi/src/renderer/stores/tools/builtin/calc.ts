@@ -14,14 +14,21 @@ interface EvalResult {
   error?: string
 }
 
-const FUNCTIONS: Record<string, (...args: number[]) => number> = {
-  sqrt: Math.sqrt,
-  abs: Math.abs,
-  round: Math.round,
-  floor: Math.floor,
-  ceil: Math.ceil,
-  min: Math.min,
-  max: Math.max,
+interface FunctionSpec {
+  fn: (...args: number[]) => number
+  /** Minimum and maximum argument count; max Infinity for variadic. */
+  minArgs: number
+  maxArgs: number
+}
+
+const FUNCTIONS: Record<string, FunctionSpec> = {
+  sqrt: { fn: Math.sqrt, minArgs: 1, maxArgs: 1 },
+  abs: { fn: Math.abs, minArgs: 1, maxArgs: 1 },
+  round: { fn: Math.round, minArgs: 1, maxArgs: 1 },
+  floor: { fn: Math.floor, minArgs: 1, maxArgs: 1 },
+  ceil: { fn: Math.ceil, minArgs: 1, maxArgs: 1 },
+  min: { fn: Math.min, minArgs: 1, maxArgs: Number.POSITIVE_INFINITY },
+  max: { fn: Math.max, minArgs: 1, maxArgs: Number.POSITIVE_INFINITY },
 }
 
 const CONSTANTS: Record<string, number> = {
@@ -139,8 +146,8 @@ export function evaluateExpression(expression: string): EvalResult {
     if (/^[a-z]+$/i.test(token)) {
       next()
       if (peek() === '(') {
-        const fn = FUNCTIONS[token.toLowerCase()]
-        if (!fn) {
+        const spec = FUNCTIONS[token.toLowerCase()]
+        if (!spec) {
           throw new Error(`unknown function "${token}"`)
         }
         next() // consume '('
@@ -155,7 +162,13 @@ export function evaluateExpression(expression: string): EvalResult {
         if (next() !== ')') {
           throw new Error(`missing closing parenthesis after ${token}(`)
         }
-        return fn(...args)
+        if (args.length < spec.minArgs || args.length > spec.maxArgs) {
+          const expects = spec.maxArgs === Number.POSITIVE_INFINITY
+            ? `at least ${spec.minArgs}`
+            : spec.minArgs === spec.maxArgs ? `${spec.minArgs}` : `${spec.minArgs}-${spec.maxArgs}`
+          throw new Error(`${token}() expects ${expects} argument(s), got ${args.length}`)
+        }
+        return spec.fn(...args)
       }
 
       const constant = CONSTANTS[token.toLowerCase()]

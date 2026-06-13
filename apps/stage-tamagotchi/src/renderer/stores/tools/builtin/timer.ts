@@ -15,7 +15,9 @@ import { timerDurationMs, useRemindersStore, validateTimerDuration } from '../..
 const tools: Promise<Tool>[] = [
   tool({
     name: 'set_timer',
-    description: 'Start a countdown timer. When it elapses you proactively tell the user in chat and an OS notification appears. Supports seconds or minutes. (Timers share the reminder list; use list_reminders / cancel_reminder to view or cancel.)',
+    // strict:false because `unit` and `label` are optional (see file-access note).
+    strict: false,
+    description: 'Start a countdown timer. When it elapses you proactively tell the user in chat and an OS notification appears. Supports seconds or minutes. To cancel or view a timer, use cancel_reminder / list_reminders (timers appear there).',
     execute: async ({ duration, unit, label }) => {
       const resolvedUnit = unit === 'seconds' ? 'seconds' : 'minutes'
       const invalid = validateTimerDuration(duration, resolvedUnit)

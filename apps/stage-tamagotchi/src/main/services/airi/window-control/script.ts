@@ -30,7 +30,29 @@ export function validateWindowMatch(match: string): string | undefined {
   if (trimmed.length < 2) {
     return 'match must be at least 2 characters to avoid matching the wrong window'
   }
+  if (trimmed.length > 200) {
+    return 'match is too long'
+  }
   return undefined
+}
+
+/**
+ * Escapes PowerShell `-like` wildcard metacharacters so a match string is
+ * treated as a literal substring.
+ *
+ * Before:
+ * - "**" / "a[b" / "file?"
+ *
+ * After:
+ * - "`*`*" / "a`[b" / "file`?"
+ *
+ * Without this, a match of "**" or "?" matches EVERY window (then
+ * Select-Object -First 1 acts on an arbitrary one), defeating the specificity
+ * validateWindowMatch enforces, and an unterminated "[" class makes -like
+ * throw. The backtick is PowerShell's escape character.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[`*?[\]]/g, char => `\`${char}`)
 }
 
 interface RawWindow {

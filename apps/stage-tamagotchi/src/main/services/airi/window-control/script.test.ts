@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseWindowList, validateWindowMatch, WINDOW_LIST_MAX } from './script'
+import { escapeLikePattern, parseWindowList, validateWindowMatch, WINDOW_LIST_MAX } from './script'
 
 describe('validateWindowMatch', () => {
   it('rejects empty matches', () => {
@@ -14,6 +14,21 @@ describe('validateWindowMatch', () => {
 
   it('accepts a reasonable substring', () => {
     expect(validateWindowMatch('Notepad')).toBeUndefined()
+  })
+
+  it('rejects overly long matches', () => {
+    expect(validateWindowMatch('x'.repeat(201))).toContain('too long')
+  })
+})
+
+describe('escapeLikePattern', () => {
+  it('escapes wildcard metacharacters so the match is literal', () => {
+    // Regression: "**" used to match every window via -like, defeating
+    // specificity; "[" used to make -like throw.
+    expect(escapeLikePattern('**')).toBe('`*`*')
+    expect(escapeLikePattern('a[b')).toBe('a`[b')
+    expect(escapeLikePattern('file?')).toBe('file`?')
+    expect(escapeLikePattern('Notepad')).toBe('Notepad')
   })
 })
 

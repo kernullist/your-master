@@ -74,8 +74,21 @@ export function validateRequestPath(rawPath: string): string | undefined {
  * - An error message naming the blocked root, or undefined when writable.
  */
 export function writeBlockReason(absolutePath: string): string | undefined {
-  const normalized = normalize(absolutePath).toLowerCase()
-  const blocked = WRITE_BLOCKED_PREFIXES.find(prefix => normalized.startsWith(prefix))
+  // NOTICE:
+  // Windows strips trailing dots and spaces from each path component at the
+  // filesystem layer, so "C:\Windows.\System32\x" and "C:\Windows \..." resolve
+  // into the real C:\Windows, but node:path.normalize preserves them verbatim —
+  // a prefix-only check would be bypassed. Strip per-component trailing dots/
+  // spaces before comparing. (Symlink/junction and 8.3-shortname evasion are
+  // still possible; this denylist is a best-effort guard behind the approval
+  // dialog, not a hard boundary.)
+  const stripped = normalize(absolutePath)
+    .split(/[/\\]/)
+    .map(segment => segment.replace(/[.\s]+$/, ''))
+    .join('\\')
+    .toLowerCase()
+
+  const blocked = WRITE_BLOCKED_PREFIXES.find(prefix => stripped.startsWith(prefix))
   if (blocked) {
     return `writes under "${blocked}" are blocked for safety`
   }

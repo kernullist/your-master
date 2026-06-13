@@ -19,6 +19,17 @@ export interface Reminder {
 /** Upper bound on how far ahead a reminder may be scheduled (~30 days). */
 export const MAX_REMINDER_DELAY_MS = 30 * 24 * 60 * 60 * 1000
 
+/** Largest delay setTimeout accepts without 32-bit overflow (~24.8 days). */
+export const MAX_SAFE_TIMEOUT_MS = 2_147_483_647
+
+/**
+ * Module-level monotonic counter for reminder ids. `Date.now()` alone collides
+ * within a millisecond and `Date.now()-listLength` reuses ids after removals,
+ * which would make a never-firing or wrong-target timer; a counter guarantees
+ * per-session uniqueness.
+ */
+let reminderIdCounter = 0
+
 /**
  * Computes the setTimeout delay for a reminder, clamped to non-negative.
  *
@@ -149,8 +160,21 @@ export const useRemindersStore = defineStore('reminders', () => {
     if (timers.has(reminder.id)) {
       return
     }
-    const delay = reminderDelayMs(reminder.dueAt, Date.now())
-    timers.set(reminder.id, setTimeout(fire, delay, reminder))
+    // NOTICE:
+    // setTimeout truncates delays above the signed 32-bit max (~24.8 days) to
+    // 1ms, which would make a reminder set ~25-30 days out fire immediately.
+    // MAX_REMINDER_DELAY_MS (30 days) exceeds that, so long delays are armed in
+    // chunks: sleep at most MAX_SAFE_TIMEOUT_MS, then re-check and re-arm.
+    const scheduleNext = () => {
+      const delay = reminderDelayMs(reminder.dueAt, Date.now())
+      if (delay > MAX_SAFE_TIMEOUT_MS) {
+        timers.set(reminder.id, setTimeout(scheduleNext, MAX_SAFE_TIMEOUT_MS))
+      }
+      else {
+        timers.set(reminder.id, setTimeout(fire, delay, reminder))
+      }
+    }
+    scheduleNext()
   }
 
   /** Re-arms all persisted reminders; call once at app startup. */
@@ -161,8 +185,9 @@ export const useRemindersStore = defineStore('reminders', () => {
   }
 
   function schedule(message: string, dueAt: number): Reminder {
+    reminderIdCounter += 1
     const reminder: Reminder = {
-      id: `rem-${Date.now()}-${reminders.value.length}`,
+      id: `rem-${Date.now()}-${reminderIdCounter}`,
       message: message.trim(),
       dueAt,
       createdAt: Date.now(),

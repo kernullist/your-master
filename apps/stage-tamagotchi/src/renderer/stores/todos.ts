@@ -13,6 +13,13 @@ export interface Todo {
 /** Cap on stored todos; keeps the list and any prompt echo bounded. */
 export const MAX_TODOS = 200
 
+/**
+ * Monotonic id counter. `Date.now()-listLength` reused ids after removals
+ * (length is reused), which made id-based complete/remove hit the wrong item;
+ * a counter guarantees per-session uniqueness.
+ */
+let todoIdCounter = 0
+
 /** Validates to-do text. Returns an error message, or undefined. */
 export function validateTodoText(text: string): string | undefined {
   const trimmed = text?.trim()
@@ -91,7 +98,8 @@ export const useTodosStore = defineStore('todos', () => {
     if (todos.value.length >= MAX_TODOS) {
       return null
     }
-    const todo: Todo = { id: `todo-${now}-${todos.value.length}`, text: text.trim(), done: false, createdAt: now }
+    todoIdCounter += 1
+    const todo: Todo = { id: `todo-${now}-${todoIdCounter}`, text: text.trim(), done: false, createdAt: now }
     todos.value = [...todos.value, todo]
     return todo
   }

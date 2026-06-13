@@ -12,7 +12,7 @@ import { defineInvokeHandler } from '@moeru/eventa'
 import { BrowserWindow, dialog } from 'electron'
 
 import { electronOsWindowClose, electronOsWindowFocus, electronOsWindowList } from '../../../../shared/eventa'
-import { parseWindowList, validateWindowMatch } from './script'
+import { escapeLikePattern, parseWindowList, validateWindowMatch } from './script'
 
 const execFileAsync = promisify(execFile)
 
@@ -112,7 +112,7 @@ export function createWindowControlService(params: {
     }
 
     try {
-      const stdout = (await runPowerShell(FOCUS_SCRIPT, match.trim())).trim()
+      const stdout = (await runPowerShell(FOCUS_SCRIPT, escapeLikePattern(match.trim()))).trim()
       const ok = stdout.startsWith('focused:')
       log.withFields({ match, ok }).log('window focus')
       return { ok, message: stdout }
@@ -151,7 +151,7 @@ export function createWindowControlService(params: {
     }
 
     try {
-      const stdout = (await runPowerShell(CLOSE_SCRIPT, match.trim())).trim()
+      const stdout = (await runPowerShell(CLOSE_SCRIPT, escapeLikePattern(match.trim()))).trim()
       const ok = stdout.startsWith('closed:')
       log.withFields({ match, ok }).log('window close')
       return { ok, message: stdout }

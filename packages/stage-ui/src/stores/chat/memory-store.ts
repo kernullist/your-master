@@ -17,6 +17,13 @@ const MAX_MEMORIES_PER_CHARACTER = 200
 /** localforage key prefix; one record per character holds its memory array. */
 const STORAGE_KEY_PREFIX = 'chat-memory-'
 
+/**
+ * Monotonic id counter. `mem-${now}-${listLength}` reused ids after the cap
+ * dropped old entries (length is reused), so a stale id reference in a later
+ * forget() could match the wrong fact; a counter guarantees uniqueness.
+ */
+let memoryIdCounter = 0
+
 function storageKey(characterId: string) {
   return `${STORAGE_KEY_PREFIX}${characterId}`
 }
@@ -87,7 +94,8 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
       return existing
     }
 
-    const item: MemoryItem = { id: `mem-${now}-${current.length}`, text: trimmed, createdAt: now }
+    memoryIdCounter += 1
+    const item: MemoryItem = { id: `mem-${now}-${memoryIdCounter}`, text: trimmed, createdAt: now }
     // Drop oldest entries first when over the cap.
     const next = [...current, item].slice(-MAX_MEMORIES_PER_CHARACTER)
     memoriesByCharacter.value = { ...memoriesByCharacter.value, [characterId]: next }

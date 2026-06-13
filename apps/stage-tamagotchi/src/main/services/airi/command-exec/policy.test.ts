@@ -21,6 +21,21 @@ describe('commandBlockReason', () => {
     expect(commandBlockReason('Remove-Item -Force -Recurse C:\\data')).toContain('blocked')
   })
 
+  it('blocks evasion variants that previously slipped through', () => {
+    // Regression: flag order rm -fr, PowerShell aliases, abbreviated flags,
+    // reg.exe, and encoded PowerShell all used to pass.
+    expect(commandBlockReason('rm -fr x')).toContain('blocked')
+    expect(commandBlockReason('ri x -Recurse -Force')).toContain('blocked')
+    expect(commandBlockReason('Remove-Item -re -fo x')).toContain('blocked')
+    expect(commandBlockReason('reg.exe delete HKLM\\x /f')).toContain('blocked')
+    expect(commandBlockReason('powershell -e SQBlAHgA')).toContain('blocked')
+    expect(commandBlockReason('powershell -EncodedCommand SQBlAHgA')).toContain('blocked')
+  })
+
+  it('does not over-block legitimate powershell flags', () => {
+    expect(commandBlockReason('powershell -ExecutionPolicy Bypass -File run.ps1')).toBeUndefined()
+  })
+
   it('blocks registry, firewall, antivirus and power commands', () => {
     expect(commandBlockReason('reg delete HKLM\\Software\\X /f')).toContain('blocked')
     expect(commandBlockReason('shutdown /s /t 0')).toContain('blocked')

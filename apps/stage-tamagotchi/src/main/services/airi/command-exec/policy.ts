@@ -24,11 +24,16 @@ const BLOCKED_PATTERNS: { pattern: RegExp, reason: string }[] = [
   { pattern: /\bmkfs\b/i, reason: 'filesystem creation' },
   { pattern: /\b(rmdir|rd)\s+\/s\b/i, reason: 'recursive directory deletion' },
   { pattern: /\bdel\b.*\/s\b/i, reason: 'recursive file deletion' },
-  { pattern: /\bRemove-Item\b.*-Recurse\b.*-Force\b/i, reason: 'recursive force deletion' },
-  { pattern: /\bRemove-Item\b.*-Force\b.*-Recurse\b/i, reason: 'recursive force deletion' },
-  { pattern: /\brm\s+-rf?\b/i, reason: 'recursive deletion' },
-  { pattern: /\breg\s+(delete|add)\b/i, reason: 'registry modification' },
+  // Remove-Item (and its PowerShell aliases ri/rd/rmdir/del/erase) with both
+  // -Recurse and -Force in either order, allowing abbreviated flags (-re/-fo).
+  { pattern: /\b(remove-item|ri|rd|rmdir|del|erase)\b[^|&;]*-r\w*\b[^|&;]*-f\w*\b/i, reason: 'recursive force deletion' },
+  { pattern: /\b(remove-item|ri|rd|rmdir|del|erase)\b[^|&;]*-f\w*\b[^|&;]*-r\w*\b/i, reason: 'recursive force deletion' },
+  // rm with a recursive flag in any order (-r, -rf, -fr, -R, --recursive).
+  { pattern: /\brm\s+-{1,2}[a-z]*r/i, reason: 'recursive deletion' },
+  { pattern: /\breg(\.exe)?\s+(delete|add)\b/i, reason: 'registry modification' },
   { pattern: /\bReg-/i, reason: 'registry cmdlet' },
+  // Base64/encoded PowerShell hides the real payload from every other pattern.
+  { pattern: /\bpowershell(\.exe)?\b[^|&;]*\s-e(c|nc|ncodedcommand)?\b/i, reason: 'encoded PowerShell command' },
   { pattern: /\bShutdown\b/i, reason: 'system shutdown' },
   { pattern: /\b(Restart|Stop)-Computer\b/i, reason: 'system power control' },
   { pattern: /\bbcdedit\b/i, reason: 'boot configuration' },

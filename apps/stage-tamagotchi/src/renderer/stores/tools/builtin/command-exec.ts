@@ -27,6 +27,8 @@ function getInvokers(): Invokers {
 const tools: Promise<Tool>[] = [
   tool({
     name: 'run_command',
+    // strict:false because `cwd` is optional (see search_files note).
+    strict: false,
     description: 'Run a shell command on the user\'s Windows computer (via cmd.exe). THE USER MUST APPROVE EVERY COMMAND in a system dialog and may deny it — if denied, accept the decision and do not retry. Dangerous commands (disk format, recursive delete, registry/firewall/antivirus changes, shutdown) are always blocked. Times out after 30s. Use for launching apps, running scripts, and read-only system queries.',
     execute: async ({ command, cwd }) => {
       const result = await getInvokers().runCommand({ command, cwd })

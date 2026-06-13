@@ -27,6 +27,8 @@ const tools: Promise<Tool>[] = [
   }),
   tool({
     name: 'list_todos',
+    // strict:false because `includeDone` is optional (see file-access note).
+    strict: false,
     description: 'List the user\'s to-do items. By default only pending items; pass includeDone to also show completed ones.',
     execute: async ({ includeDone }) => {
       const store = useTodosStore()

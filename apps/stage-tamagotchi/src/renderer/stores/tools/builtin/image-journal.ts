@@ -283,6 +283,10 @@ async function executeImageJournalAction(params: any) {
 const tools: Promise<Tool>[] = [
   tool({
     name: 'image_journal',
+    // strict:false because prompt/title/query/mode are optional. xsai tool()
+    // defaults strict:true, forcing additionalProperties:false without adding
+    // optional keys to `required` — rejected by OpenAI-strict providers.
+    strict: false,
     description: 'Manage AI-generated images. Use "create" to generate and display images. An optional "mode" (inline, widget, bg, bg_widget) can override the default character routing preference. Use "apply" to switch to an existing image from the journal.',
     execute: params => executeImageJournalAction(params),
     parameters: imageJournalParams,

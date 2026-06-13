@@ -25,6 +25,15 @@ describe('evaluateExpression', () => {
     expect(evaluateExpression('round(pi * 100)').value).toBe(314)
   })
 
+  it('enforces function arity instead of silently ignoring extra args', () => {
+    // Regression: abs(3,4) used to return 3 (extra arg ignored).
+    expect(evaluateExpression('abs(3, 4)').error).toContain('expects 1')
+    expect(evaluateExpression('sqrt()').error).toContain('expects 1')
+    // Variadic functions still accept many args but require at least one.
+    expect(evaluateExpression('min()').error).toContain('at least 1')
+    expect(evaluateExpression('max(1, 2, 3, 4)').value).toBe(4)
+  })
+
   it('reports division and modulo by zero', () => {
     expect(evaluateExpression('1 / 0').error).toContain('division by zero')
     expect(evaluateExpression('1 % 0').error).toContain('modulo by zero')

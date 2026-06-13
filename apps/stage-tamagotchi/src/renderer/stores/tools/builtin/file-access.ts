@@ -71,6 +71,11 @@ const tools: Promise<Tool>[] = [
   }),
   tool({
     name: 'search_files',
+    // NOTICE: strict:false because `mode` is optional. xsai tool() defaults
+    // strict:true, which forces additionalProperties:false WITHOUT adding
+    // optional keys to `required` — a schema OpenAI-strict providers reject.
+    // Same approach as createFlattenedMcpTools.
+    strict: false,
     description: 'Search a folder (recursively) for files by name or by text content. Use to answer "where is my ... file?" or "which file mentions ...". mode "name" matches the filename; mode "content" searches inside text files and returns matching lines. Read-only.',
     execute: async ({ directory, query, mode }) => {
       const result = await getInvokers().searchFiles({ directory, query, mode })
