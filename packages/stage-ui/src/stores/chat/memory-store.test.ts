@@ -3,7 +3,16 @@ import type { MemoryItem, MemoryKind } from './memory-store'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { formatMemoriesForPrompt, normalizeMemoryKind, searchMemories, selectMemoriesForPrompt, useChatMemoryStore } from './memory-store'
+import {
+  cosineSimilarity,
+  formatMemoriesForPrompt,
+  memoriesNeedingEmbedding,
+  normalizeMemoryKind,
+  rankMemoriesBySimilarity,
+  searchMemories,
+  selectMemoriesForPrompt,
+  useChatMemoryStore,
+} from './memory-store'
 
 function mem(kind: MemoryKind, text: string, createdAt: number): MemoryItem {
   return { id: `${kind}-${createdAt}`, kind, text, createdAt }
@@ -87,6 +96,69 @@ describe('searchMemories', () => {
   })
 })
 
+describe('cosineSimilarity', () => {
+  it('returns 1 for identical direction, 0 for orthogonal, and guards bad input', () => {
+    // Identical direction (magnitude-independent) -> 1.
+    expect(cosineSimilarity([1, 0], [2, 0])).toBeCloseTo(1)
+    // Orthogonal -> 0.
+    expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0)
+    // Opposite direction -> -1.
+    expect(cosineSimilarity([1, 0], [-1, 0])).toBeCloseTo(-1)
+    // Length mismatch and zero vector are guarded to 0 (no NaN poisoning).
+    expect(cosineSimilarity([1, 0], [1])).toBe(0)
+    expect(cosineSimilarity([0, 0], [1, 1])).toBe(0)
+    expect(cosineSimilarity([], [])).toBe(0)
+  })
+})
+
+describe('rankMemoriesBySimilarity', () => {
+  function embedded(kind: MemoryKind, text: string, createdAt: number, embedding: number[], model = 'm1'): MemoryItem {
+    return { id: `${text}-${createdAt}`, kind, text, createdAt, embedding, embeddingModel: model }
+  }
+
+  it('ranks by cosine descending, applies minScore, topK, and model filter', () => {
+    const items: MemoryItem[] = [
+      embedded('fact', 'tea', 1, [1, 0]), // cosine 1 with query
+      embedded('fact', 'coffee', 2, [0.9, 0.1]), // high
+      embedded('fact', 'unrelated', 3, [0, 1]), // cosine 0 -> below minScore
+      embedded('fact', 'other-model', 4, [1, 0], 'm2'), // filtered out by model
+      mem('fact', 'no-embedding', 5), // skipped (no vector)
+    ]
+    const ranked = rankMemoriesBySimilarity(items, [1, 0], { topK: 2, minScore: 0.3, model: 'm1' })
+    const texts = ranked.map(r => r.memory.text)
+    // Only the two strong, same-model matches, strongest first.
+    expect(texts).toEqual(['tea', 'coffee'])
+    expect(ranked[0].score).toBeCloseTo(1)
+    expect(ranked[1].score).toBeGreaterThan(0.3)
+  })
+
+  it('breaks score ties by recency and returns [] for an empty query vector', () => {
+    const items: MemoryItem[] = [
+      embedded('fact', 'older', 1, [1, 0]),
+      embedded('fact', 'newer', 2, [1, 0]),
+    ]
+    const ranked = rankMemoriesBySimilarity(items, [1, 0], { minScore: 0 })
+    expect(ranked.map(r => r.memory.text)).toEqual(['newer', 'older'])
+    expect(rankMemoriesBySimilarity(items, [], { minScore: 0 })).toEqual([])
+  })
+})
+
+describe('memoriesNeedingEmbedding', () => {
+  it('selects items missing a vector or made by a different model', () => {
+    const items: MemoryItem[] = [
+      { id: 'a', kind: 'fact', text: 'has m1', createdAt: 1, embedding: [1], embeddingModel: 'm1' },
+      { id: 'b', kind: 'fact', text: 'has m2', createdAt: 2, embedding: [1], embeddingModel: 'm2' },
+      { id: 'c', kind: 'fact', text: 'empty vec', createdAt: 3, embedding: [], embeddingModel: 'm1' },
+      mem('fact', 'no vec', 4),
+    ]
+    const need = memoriesNeedingEmbedding(items, 'm1').map(i => i.text)
+    expect(need).toContain('has m2')
+    expect(need).toContain('empty vec')
+    expect(need).toContain('no vec')
+    expect(need).not.toContain('has m1')
+  })
+})
+
 describe('useChatMemoryStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -111,6 +183,17 @@ describe('useChatMemoryStore', () => {
     // Same text, different kind -> a distinct memory.
     await store.remember('char-1', 'Use LM Studio', 'instruction', 3000)
     expect(store.list('char-1')).toHaveLength(2)
+  })
+
+  it('sets and persists an embedding by id, ignoring unknown ids', async () => {
+    const store = useChatMemoryStore()
+    const item = await store.remember('char-1', 'Likes green tea', 'preference', 1000)
+    expect(await store.setEmbedding('char-1', item.id, [0.1, 0.2, 0.3], 'm1')).toBe(true)
+    const stored = store.list('char-1')[0]
+    expect(stored.embedding).toEqual([0.1, 0.2, 0.3])
+    expect(stored.embeddingModel).toBe('m1')
+    // Unknown id is a no-op.
+    expect(await store.setEmbedding('char-1', 'nope', [0], 'm1')).toBe(false)
   })
 
   it('forgets an item by id', async () => {

@@ -21,6 +21,19 @@ export interface MemoryItem {
   /** The memory text, e.g. "The user's name is 꿀보." */
   text: string
   createdAt: number
+  /**
+   * Semantic embedding of {@link MemoryItem.text}, used for meaning-based
+   * recall (cosine similarity). Optional: computed lazily by the embedding
+   * service and persisted alongside the item. Absent for items saved before
+   * an embedding model was available or while one is still loading.
+   */
+  embedding?: number[]
+  /**
+   * Model id that produced {@link MemoryItem.embedding}. Stored so a vector
+   * made by a different model is treated as stale (re-embedded) rather than
+   * compared across incompatible vector spaces.
+   */
+  embeddingModel?: string
 }
 
 const VALID_KINDS = new Set<string>(MEMORY_KINDS)
@@ -127,6 +140,25 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
     return item
   }
 
+  /**
+   * Attaches (or refreshes) a memory's semantic embedding and persists it.
+   * No-op when the id is unknown. Used by the embedding service to cache
+   * vectors so recall does not re-embed unchanged memories every time.
+   */
+  async function setEmbedding(characterId: string, id: string, embedding: number[], model: string): Promise<boolean> {
+    await ensureLoaded(characterId)
+    const current = memoriesByCharacter.value[characterId] ?? []
+    const index = current.findIndex(item => item.id === id)
+    if (index < 0) {
+      return false
+    }
+    const next = current.slice()
+    next[index] = { ...next[index], embedding, embeddingModel: model }
+    memoriesByCharacter.value = { ...memoriesByCharacter.value, [characterId]: next }
+    await persist(characterId)
+    return true
+  }
+
   /** Removes a fact by id; returns true when something was removed. */
   async function forget(characterId: string, id: string): Promise<boolean> {
     await ensureLoaded(characterId)
@@ -153,6 +185,7 @@ export const useChatMemoryStore = defineStore('chat-memory', () => {
     ensureLoaded,
     list,
     remember,
+    setEmbedding,
     forget,
     clear,
   }
@@ -201,6 +234,138 @@ export function searchMemories(memories: MemoryItem[], query: string): MemoryIte
     return memories
   }
   return memories.filter(item => item.text.toLowerCase().includes(needle))
+}
+
+/**
+ * Cosine similarity of two equal-length vectors, in [-1, 1] (higher = more
+ * similar). Returns 0 for mismatched lengths or a zero-magnitude vector so a
+ * malformed embedding never poisons ranking.
+ *
+ * Use when:
+ * - Ranking memory embeddings against a query embedding for semantic recall.
+ *
+ * Expects:
+ * - `a` and `b` are numeric vectors of the same dimensionality.
+ *
+ * Returns:
+ * - The cosine of the angle between them; 0 when undefined (length mismatch
+ *   or either vector is all-zero).
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length === 0 || a.length !== b.length) {
+    return 0
+  }
+  // Single pass: accumulate dot product and both squared magnitudes.
+  let dot = 0
+  let magA = 0
+  let magB = 0
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i]
+    magA += a[i] * a[i]
+    magB += b[i] * b[i]
+  }
+  if (magA === 0 || magB === 0) {
+    return 0
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB))
+}
+
+/** A memory paired with its similarity score to a query. */
+export interface ScoredMemory {
+  memory: MemoryItem
+  /** Cosine similarity to the query embedding, in [-1, 1]. */
+  score: number
+}
+
+/**
+ * Options for {@link rankMemoriesBySimilarity}.
+ */
+export interface RankBySimilarityOptions {
+  /**
+   * Maximum number of results to return (highest score first).
+   * @default 8
+   */
+  topK?: number
+  /**
+   * Minimum cosine score to include. Drops weak matches so an unrelated query
+   * does not surface noise.
+   * @default 0.3
+   */
+  minScore?: number
+  /**
+   * When set, only memories whose `embeddingModel` equals this are considered
+   * (vectors from other models live in incompatible spaces).
+   */
+  model?: string
+}
+
+/** Default cap on semantically ranked results. */
+export const SEMANTIC_RECALL_TOP_K = 8
+
+/** Default minimum cosine score for a semantic match to count. */
+export const SEMANTIC_RECALL_MIN_SCORE = 0.3
+
+/**
+ * Ranks memories by cosine similarity of their stored embedding to a query
+ * embedding, returning the strongest matches first.
+ *
+ * Use when:
+ * - Performing meaning-based recall (e.g. query "what do I drink" matching a
+ *   stored "Likes green tea") where keyword search would miss the link.
+ *
+ * Expects:
+ * - `queryEmbedding` is produced by the same model that produced the items'
+ *   embeddings; pass `options.model` to enforce this.
+ * - Memories without an embedding (or with a non-matching model) are skipped,
+ *   not treated as zero-similarity matches.
+ *
+ * Returns:
+ * - Up to `topK` `{ memory, score }` pairs with `score >= minScore`, sorted by
+ *   score descending (ties broken by recency).
+ */
+export function rankMemoriesBySimilarity(
+  memories: MemoryItem[],
+  queryEmbedding: number[],
+  options: RankBySimilarityOptions = {},
+): ScoredMemory[] {
+  const { topK = SEMANTIC_RECALL_TOP_K, minScore = SEMANTIC_RECALL_MIN_SCORE, model } = options
+  if (queryEmbedding.length === 0) {
+    return []
+  }
+
+  const scored: ScoredMemory[] = []
+  for (const memory of memories) {
+    if (!memory.embedding || memory.embedding.length === 0) {
+      continue
+    }
+    if (model && memory.embeddingModel !== model) {
+      continue
+    }
+    const score = cosineSimilarity(queryEmbedding, memory.embedding)
+    if (score >= minScore) {
+      scored.push({ memory, score })
+    }
+  }
+
+  // Highest similarity first; for equal scores prefer the more recent memory.
+  scored.sort((a, b) => (b.score - a.score) || (b.memory.createdAt - a.memory.createdAt))
+  return scored.slice(0, topK)
+}
+
+/**
+ * Selects memories that still need an embedding for the given model: those
+ * with no embedding yet, or whose cached embedding was made by a different
+ * model. Used to backfill vectors incrementally before semantic recall.
+ *
+ * Expects:
+ * - `model` is the id of the currently active embedding model.
+ *
+ * Returns:
+ * - The subset of `memories` whose `embedding` is missing/empty or whose
+ *   `embeddingModel` differs from `model`.
+ */
+export function memoriesNeedingEmbedding(memories: MemoryItem[], model: string): MemoryItem[] {
+  return memories.filter(item => !item.embedding || item.embedding.length === 0 || item.embeddingModel !== model)
 }
 
 /** Heading shown for each memory kind. */

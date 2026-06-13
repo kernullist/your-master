@@ -33,7 +33,7 @@ reads are free.
 | `focus_window` | Bring a window to the front by title substring | none | `window-control` |
 | `close_window` | Gracefully close a window by title substring | **dialog** | `window-control` |
 | `remember` | Save a durable fact about the user (per character) | none | `stage-ui` memory store |
-| `recall_memories` | Recall memories (optional keyword search) for the active character | none | `stage-ui` memory store |
+| `recall_memories` | Recall memories for the active character (optional query = semantic/embedding search, keyword fallback) | none | `stage-ui` memory store + local embedding worker |
 | `forget` | Delete a remembered fact by id | none | `stage-ui` memory store |
 | `set_timer` | Start a countdown timer (seconds/minutes); fires like a reminder | none | `renderer` reminders store |
 | `set_reminder` | Schedule a reminder; fires as a proactive chat message + OS notification | none | `renderer` reminders store |
@@ -128,11 +128,42 @@ questions, one-off requests, small talk, and secrets.
 everything: `selectMemoriesForPrompt` always keeps instructions/decisions/
 preferences (low-volume, durable) but only the most recent
 `PROMPT_RECENT_EVENT_FACT_LIMIT` events/facts. The rest stay reachable —
-`recall_memories` takes an optional keyword `query` (`searchMemories`) so the
-model can pull older facts/events on demand. This keeps the prompt bounded
-without an embeddings index. `daily_briefing` also surfaces standing
-`instruction` memories alongside one-off to-dos and upcoming reminders, tying
-recurring requests and tasks into one day-at-a-glance.
+`recall_memories` takes an optional `query` so the model can pull older
+facts/events on demand. `daily_briefing` also surfaces standing `instruction`
+memories alongside one-off to-dos and upcoming reminders, tying recurring
+requests and tasks into one day-at-a-glance.
+
+**Semantic (embedding) recall.** When `recall_memories` is given a `query`, it
+recalls by *meaning*, not just literal substring: `semanticRecall`
+(`stores/chat/memory-embeddings.ts`) embeds the query and each memory with a
+small local sentence-transformer (`Xenova/all-MiniLM-L6-v2`, 384-dim, ~23MB)
+running in a worker — fully offline, no provider/API key required — and ranks
+by cosine similarity (`rankMemoriesBySimilarity`, default top-8, min score
+0.3). Vectors are computed lazily and cached on each `MemoryItem`
+(`embedding` + `embeddingModel`) in IndexedDB, so a memory is embedded once and
+reused; backfill is bounded per call (`MAX_BACKFILL_PER_RECALL`). It is
+best-effort and degrades gracefully: if the worker/model fails, the query
+embed throws, or nothing clears the similarity threshold, it falls back to
+keyword `searchMemories` — recall is never worse than the substring path. The
+pure ranking math (`cosineSimilarity`, `rankMemoriesBySimilarity`,
+`memoriesNeedingEmbedding`) lives in `memory-store.ts` and is unit-tested.
+
+Usage example — the user changes wording but the meaning matches:
+
+```
+User: "내가 평소에 뭘 마시는지 기억해?"   (do you remember what I usually drink?)
+  -> recall_memories({ query: "what do I drink" })
+     embeds the query, cosine-ranks memories
+     -> ["Likes green tea", "Enjoys coffee in the morning"]   (matched by meaning,
+        even though neither stored memory contains the word "drink")
+Assistant: "녹차를 즐겨 마시고, 아침에는 커피도 드시죠."
+```
+
+Omit `query` to list everything (no embedding work):
+
+```
+recall_memories({})  ->  all memories, each with { id, kind, text }
+```
 
 ### Capability scoping
 
@@ -200,9 +231,14 @@ Cross-cutting invariants established during review — keep them when editing to
 - `screenshot` returns a file path, not an inline image — wiring tool-result
   images into the next LLM turn (vision) is a separate, provider-dependent
   feature and is not implemented.
-- Memory recall is keyword/substring (no embeddings); the prompt keeps all
-  durable items plus the most recent events/facts, and older ones are reachable
-  via `recall_memories` keyword search. Semantic recall is a future step.
+- Memory recall is semantic when `recall_memories` is given a `query` (local
+  `Xenova/all-MiniLM-L6-v2` embeddings, cosine ranking) with a keyword/substring
+  fallback; the prompt itself still keeps all durable items plus the most recent
+  events/facts, with older ones reachable on demand via `recall_memories`. The
+  embedding worker downloads the model (~23MB) on first semantic recall, then
+  caches it; vectors are cached per memory in IndexedDB. Prompt-time memory
+  selection is still recency/kind-based (not embedding-ranked) to stay
+  KV-cache stable — semantic ranking applies to on-demand `recall_memories`.
 - GUI control is limited to window management (list/focus/close). Mouse and
   keyboard injection are intentionally not implemented — they need native
   modules (nut.js/robotjs) and carry a high misfire risk. The

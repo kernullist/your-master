@@ -1,6 +1,7 @@
 import type { Tool } from '@xsai/shared-chat'
 
-import { normalizeMemoryKind, searchMemories, useChatMemoryStore } from '@proj-airi/stage-ui/stores/chat/memory-store'
+import { semanticRecall } from '@proj-airi/stage-ui/stores/chat/memory-embeddings'
+import { normalizeMemoryKind, useChatMemoryStore } from '@proj-airi/stage-ui/stores/chat/memory-store'
 import { useAiriCardStore } from '@proj-airi/stage-ui/stores/modules/airi-card'
 import { tool } from '@xsai/tool'
 import { z } from 'zod'
@@ -32,17 +33,20 @@ const tools: Promise<Tool>[] = [
     name: 'recall_memories',
     // strict:false because `query` is optional.
     strict: false,
-    description: 'Recall what you remember for this character (instructions, decisions, events, preferences, facts), each with its kind. Pass an optional query to keyword-search your memory — useful for older facts/events that may not be in your current context. Omit query to list everything.',
+    description: 'Recall what you remember for this character (instructions, decisions, events, preferences, facts), each with its kind. Pass an optional query to recall by meaning (semantic search) — finds related memories even when wording differs, e.g. "what do I drink" surfaces "Likes green tea". Useful for older facts/events not in your current context. Omit query to list everything.',
     execute: async ({ query }) => {
       const memoryStore = useChatMemoryStore()
       const characterId = activeCharacterId()
       await memoryStore.ensureLoaded(characterId)
-      const all = memoryStore.list(characterId)
-      const memories = query ? searchMemories(all, query) : all
+      // With a query: semantic recall (embedding cosine similarity) with a
+      // keyword-search fallback baked in. Without: list everything.
+      const memories = query
+        ? await semanticRecall(characterId, query)
+        : memoryStore.list(characterId)
       return JSON.stringify(memories.map(item => ({ id: item.id, kind: item.kind, text: item.text })))
     },
     parameters: z.object({
-      query: z.string().optional().describe('Optional keyword to search memory text; omit to list all'),
+      query: z.string().optional().describe('Optional natural-language query to recall by meaning; omit to list all'),
     }),
   }),
   tool({
