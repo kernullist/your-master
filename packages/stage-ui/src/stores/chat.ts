@@ -170,10 +170,18 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         // Race the turn against a watchdog so a hung downstream step (a
         // post-stream hook awaiting a dead service, a frozen renderer) cannot
         // block the queue worker and leave the UI stuck "thinking" forever.
-        const watchdogError = new Error('chat turn watchdog timeout')
+        // The phase is captured at FIRE time (not creation) and embedded in
+        // both the thrown error and the user-facing message, so the stuck phase
+        // is visible without digging through the renderer console.
+        let watchdogFired = false
+        let watchdogPhase = ''
         let watchdogTimer: ReturnType<typeof setTimeout> | undefined
         const watchdog = new Promise<never>((_, reject) => {
-          watchdogTimer = setTimeout(reject, TURN_WATCHDOG_MS, watchdogError)
+          watchdogTimer = setTimeout(() => {
+            watchdogFired = true
+            watchdogPhase = currentTurnPhase
+            reject(new Error(`chat turn watchdog timeout: stuck in phase "${watchdogPhase}"`))
+          }, TURN_WATCHDOG_MS)
         })
 
         try {
@@ -181,16 +189,16 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
           deferred.resolve()
         }
         catch (error) {
-          if (error === watchdogError) {
+          if (watchdogFired) {
             // Recover: neutralize the orphaned turn (its remaining
             // generation-guarded steps no-op), unstick the UI, and tell the
             // user. The orphaned performSend keeps running but is now stale.
-            console.error(`[chat] turn watchdog fired in phase "${currentTurnPhase}"; recovering. The turn did not finish within ${TURN_WATCHDOG_MS}ms.`)
+            console.error(`[chat] turn watchdog fired in phase "${watchdogPhase}"; recovering. The turn did not finish within ${TURN_WATCHDOG_MS}ms.`)
             chatSession.bumpSessionGeneration(sessionId)
             sending.value = false
             chatSession.appendSessionMessage(sessionId, {
               role: 'error',
-              content: '응답이 시간 내에 끝나지 않아 중단했어. 다시 시도해줘.',
+              content: `응답이 시간 내에 끝나지 않아 중단했어 (멈춘 단계: ${watchdogPhase}). 다시 시도해줘.`,
               createdAt: Date.now(),
               id: nanoid(),
             })
