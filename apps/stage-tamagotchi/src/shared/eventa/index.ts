@@ -290,10 +290,26 @@ export interface ElectronScreenshotResult {
   path?: string
   width?: number
   height?: number
+  /** Whether a full screen or a single window was captured. */
+  source?: 'screen' | 'window'
+  /** Title of the captured window when {@link ElectronScreenshotResult.source} is 'window'. */
+  matchedWindow?: string
+  /**
+   * Titles of open windows, returned when a `window` query matched nothing so
+   * the caller can re-query with a correct title.
+   */
+  availableWindows?: string[]
   error?: string
 }
 
-export const electronScreenshotCapture = defineInvokeEventa<ElectronScreenshotResult, void>('eventa:invoke:electron:screenshot:capture')
+/**
+ * Capture a screenshot.
+ *
+ * Payload:
+ * - `window` (optional): case-insensitive substring of a window title to
+ *   capture just that window. Omit to capture the full primary screen.
+ */
+export const electronScreenshotCapture = defineInvokeEventa<ElectronScreenshotResult, { window?: string } | void>('eventa:invoke:electron:screenshot:capture')
 
 export const electronNotify = defineInvokeEventa<{ ok: boolean }, { title: string, body: string }>('eventa:invoke:electron:notify')
 

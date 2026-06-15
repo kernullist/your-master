@@ -15,6 +15,7 @@ import {
   electronNotify,
   electronScreenshotCapture,
 } from '../../../../shared/eventa'
+import { selectWindowSource } from './window-match'
 
 /** Max clipboard characters returned to the model; protects context budget. */
 const CLIPBOARD_READ_MAX_CHARS = 16 * 1024
@@ -55,20 +56,52 @@ export function createDesktopIoService(params: {
     return { ok: true }
   })
 
-  defineInvokeHandler(params.context, electronScreenshotCapture, async (): Promise<ElectronScreenshotResult> => {
+  defineInvokeHandler(params.context, electronScreenshotCapture, async (payload): Promise<ElectronScreenshotResult> => {
     try {
-      // Capture at the primary display's full resolution. desktopCapturer
-      // thumbnails are the documented main-process way to grab the screen
-      // without a renderer media stream.
+      // Size the thumbnails to the primary display so a captured window or
+      // screen is not downscaled. desktopCapturer thumbnails are the documented
+      // main-process way to grab pixels without a renderer media stream.
       const primary = screen.getPrimaryDisplay()
       const { width, height } = primary.size
       const scale = primary.scaleFactor || 1
+      const thumbnailSize = { width: Math.round(width * scale), height: Math.round(height * scale) }
 
-      const sources = await desktopCapturer.getSources({
-        types: ['screen'],
-        thumbnailSize: { width: Math.round(width * scale), height: Math.round(height * scale) },
-      })
+      const windowQuery = payload?.window?.trim()
 
+      // Window-targeted capture: enumerate windows and match by title so a
+      // request like "screenshot VMware" grabs just that window, not the whole
+      // screen (the previous behavior, which ignored any target).
+      if (windowQuery) {
+        const windows = await desktopCapturer.getSources({ types: ['window'], thumbnailSize })
+        const matched = selectWindowSource(windows, windowQuery)
+
+        if (!matched) {
+          // Echo the open window titles back so the model can retry with a real one.
+          return {
+            error: `no open window title contains "${windowQuery}"`,
+            availableWindows: windows.map(source => source.name).filter(Boolean),
+          }
+        }
+
+        const image = matched.thumbnail
+        // Minimized/occluded windows can yield an empty DWM thumbnail; tell the
+        // user to bring it to the front rather than save a blank image.
+        if (image.isEmpty()) {
+          return { error: `window "${matched.name}" could not be captured (it may be minimized); bring it to the front and try again` }
+        }
+
+        const buffer = image.toPNG()
+        const size = image.getSize()
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+        const outPath = join(app.getPath('pictures'), `airi-screenshot-${stamp}.png`)
+        await writeFile(outPath, buffer)
+
+        log.withFields({ path: outPath, window: matched.name, width: size.width, height: size.height }).log('window screenshot captured')
+        return { path: outPath, width: size.width, height: size.height, source: 'window', matchedWindow: matched.name }
+      }
+
+      // Full-screen capture (no window target).
+      const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize })
       if (sources.length === 0) {
         return { error: 'no screen sources available' }
       }
@@ -84,7 +117,7 @@ export function createDesktopIoService(params: {
       await writeFile(outPath, buffer)
 
       log.withFields({ path: outPath, width: size.width, height: size.height }).log('screenshot captured')
-      return { path: outPath, width: size.width, height: size.height }
+      return { path: outPath, width: size.width, height: size.height, source: 'screen' }
     }
     catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }

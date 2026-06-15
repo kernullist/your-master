@@ -60,15 +60,28 @@ const tools: Promise<Tool>[] = [
   }),
   tool({
     name: 'screenshot',
-    description: 'Capture the user\'s primary screen and save it as a PNG. Returns the saved file path; use file_read or describe it to the user. Use when the user asks about what is on their screen.',
-    execute: async () => {
-      const result = await getInvokers().screenshot()
+    // strict:false because `window` is optional (xsai tool() defaults strict:true
+    // without adding optional keys to required - rejected by strict providers).
+    strict: false,
+    description: 'Capture the screen and save it as a PNG. Pass `window` (a substring of a window title, e.g. "VMware", "Chrome") to capture just that one window instead of the whole screen; omit it to capture the full primary screen. If the window is not found, the result lists the open window titles so you can retry with a correct one. Returns the saved file path; describe it to the user. Use when the user asks about what is on their screen or in a specific app window.',
+    execute: async ({ window }) => {
+      const result = await getInvokers().screenshot(window ? { window } : undefined)
       if (result.error) {
-        return `Error: ${result.error}`
+        // Surface available titles so the model can immediately retry with a real window.
+        const hint = result.availableWindows?.length ? ` Open windows: ${result.availableWindows.join(', ')}` : ''
+        return `Error: ${result.error}.${hint}`
       }
-      return JSON.stringify({ path: result.path, width: result.width, height: result.height })
+      return JSON.stringify({
+        path: result.path,
+        width: result.width,
+        height: result.height,
+        source: result.source,
+        matchedWindow: result.matchedWindow,
+      })
     },
-    parameters: z.object({}),
+    parameters: z.object({
+      window: z.string().optional().describe('Optional substring of a window title to capture only that window (e.g. "VMware"); omit for the full screen'),
+    }),
   }),
   tool({
     name: 'system_info',

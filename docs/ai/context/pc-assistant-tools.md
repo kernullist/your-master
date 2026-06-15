@@ -16,7 +16,7 @@ reads are free.
 | `run_command` | Run a shell command via cmd.exe (30s timeout, output capped) | **dialog** | `command-exec` |
 | `clipboard_read` | Read clipboard text (16KB cap) | none | `desktop-io` |
 | `clipboard_write` | Replace clipboard text | none | `desktop-io` |
-| `screenshot` | Capture primary screen to a PNG under Pictures, return its path | none | `desktop-io` |
+| `screenshot` | Capture the full screen, or a single window by title (`window` arg), to a PNG under Pictures; return its path | none | `desktop-io` |
 | `system_info` | Read CPU/memory usage, OS info, hostname, uptime | none | `system-info` |
 | `daily_briefing` | Gather date/time + pending to-dos + upcoming reminders for a day-at-a-glance | none | `renderer` |
 | `list_tool_categories` | List tool categories and whether each is enabled | none | `renderer` tool scoping |
@@ -61,7 +61,8 @@ What the user can say in chat to trigger each tool:
 | "메모장 열어줘" / "npm run build 실행해줘" | `run_command` → approval dialog |
 | "방금 복사한 거 정리해줘" | `clipboard_read` |
 | "이 결과 클립보드에 넣어줘" | `clipboard_write` |
-| "지금 화면 캡처해줘" | `screenshot` (saved to Pictures) |
+| "지금 화면 캡처해줘" | `screenshot` (full screen, saved to Pictures) |
+| "VMware 창만 캡처해줘" | `screenshot({ window: "VMware" })` (single window) |
 | "메모리 얼마나 쓰고 있어?" / "내 PC 사양 알려줘" | `system_info` |
 | "뭐가 CPU 잡아먹고 있어?" | `system_info` + `run_command` (tasklist) |
 | "내 이름은 꿀보야, 기억해" | `remember` |
@@ -231,6 +232,12 @@ Cross-cutting invariants established during review — keep them when editing to
 - `screenshot` returns a file path, not an inline image — wiring tool-result
   images into the next LLM turn (vision) is a separate, provider-dependent
   feature and is not implemented.
+- `screenshot` can target a single window by title (`window` arg, matched
+  case-insensitively, shortest title wins) via `desktopCapturer` window
+  sources; without it the full primary screen is captured. A minimized window
+  yields an empty thumbnail (the tool asks the user to bring it to the front),
+  and some GPU-accelerated apps (e.g. certain VM or game windows) can render a
+  black DWM thumbnail — fall back to full-screen capture in that case.
 - Memory recall is semantic when `recall_memories` is given a `query` (local
   `Xenova/all-MiniLM-L6-v2` embeddings, cosine ranking) with a keyword/substring
   fallback; the prompt itself still keeps all durable items plus the most recent
