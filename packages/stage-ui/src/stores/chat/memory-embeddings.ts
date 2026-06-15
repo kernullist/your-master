@@ -32,6 +32,39 @@ export const MEMORY_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2'
 const MAX_BACKFILL_PER_RECALL = 24
 
 /**
+ * Per-embed timeout. The FIRST embed lazily triggers the worker's one-time
+ * model download (~23MB from a CDN); on a slow/proxied network that can stall
+ * indefinitely. Because `recall_memories` is awaited inside the chat turn
+ * (waitForTools), an unbounded embed would hang the whole turn in a "thinking"
+ * state forever. Bounding it lets recall fall back to keyword search and the
+ * turn complete; the worker keeps downloading in the background, so once the
+ * model is cached later recalls embed within this budget and semantic recall
+ * turns on. Generous enough for cached-model load + inference (sub-second).
+ */
+const EMBED_TIMEOUT_MS = 12_000
+
+/**
+ * Rejects with Error(`message`) if `promise` does not settle within `ms`,
+ * otherwise resolves/rejects with the original outcome. Timer is always cleared.
+ * Used to bound the embedding worker so a stalled model download cannot hang a
+ * chat turn (see {@link EMBED_TIMEOUT_MS}).
+ */
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  }
+  finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
+}
+
+/**
  * Embeds a single text. Injected into {@link runSemanticRecall} so the
  * orchestration can be unit-tested without spinning up a worker.
  */
@@ -72,10 +105,16 @@ function getProvider() {
  * - A 384-dim normalized embedding for {@link MEMORY_EMBEDDING_MODEL}.
  */
 export async function embedText(text: string): Promise<number[]> {
-  const { embedding } = await embed({
-    ...getProvider().embed(MEMORY_EMBEDDING_MODEL),
-    input: text,
-  })
+  // Bound the worker call so a stalled one-time model download cannot hang the
+  // chat turn that awaits recall; on timeout callers fall back to keyword search.
+  const { embedding } = await withTimeout(
+    embed({
+      ...getProvider().embed(MEMORY_EMBEDDING_MODEL),
+      input: text,
+    }),
+    EMBED_TIMEOUT_MS,
+    `embedding timed out after ${EMBED_TIMEOUT_MS}ms (model may still be downloading)`,
+  )
   return Array.from(embedding)
 }
 
@@ -138,9 +177,23 @@ export async function runSemanticRecall(
     return memories
   }
 
-  // Backfill embeddings for items that lack a vector for the active model.
-  // Bounded and sequential; failures are tolerated (those items just stay on
-  // the keyword path this round).
+  // Embed the query FIRST. This doubles as a readiness probe: if the worker's
+  // model is still downloading (or otherwise stalls), this times out and we bail
+  // to keyword search immediately, rather than attempting N backfill embeds that
+  // would each hit the same stall and multiply the delay (the bug that hung the
+  // chat turn in "thinking" forever).
+  let queryEmbedding: number[]
+  try {
+    queryEmbedding = await deps.embedText(trimmed)
+  }
+  catch (error) {
+    console.warn('[memory-embeddings] query embed failed; using keyword search:', error)
+    return searchMemories(memories, trimmed)
+  }
+
+  // The model is loaded (the query embed succeeded), so backfilling missing
+  // vectors is now fast. Bounded and sequential; per-item failures are tolerated
+  // (those items just stay on the keyword path this round).
   const pending = memoriesNeedingEmbedding(memories, model).slice(0, MAX_BACKFILL_PER_RECALL)
   for (const item of pending) {
     try {
@@ -152,16 +205,6 @@ export async function runSemanticRecall(
     catch (error) {
       console.warn('[memory-embeddings] backfill failed (ignored):', error)
     }
-  }
-
-  // Embed the query and rank. Any failure falls through to keyword search.
-  let queryEmbedding: number[]
-  try {
-    queryEmbedding = await deps.embedText(trimmed)
-  }
-  catch (error) {
-    console.warn('[memory-embeddings] query embed failed; using keyword search:', error)
-    return searchMemories(memories, trimmed)
   }
 
   const ranked = rankMemoriesBySimilarity(memories, queryEmbedding, {

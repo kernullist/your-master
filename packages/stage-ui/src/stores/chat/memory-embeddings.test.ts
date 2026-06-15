@@ -77,18 +77,35 @@ describe('runSemanticRecall', () => {
     expect(setEmbedding).not.toHaveBeenCalled()
   })
 
-  it('falls back to keyword search when the query embed throws', async () => {
+  it('falls back to keyword search when the query embed throws/times out, without attempting backfill', async () => {
+    // ROOT CAUSE:
+    //
+    // recall_memories(query) is awaited inside the chat turn (waitForTools). The
+    // first embed lazily downloads the model; on a slow/proxied network it could
+    // stall, and embedText had no timeout, so the tool — and the whole turn —
+    // hung in "thinking" forever.
+    //
+    // Fix: embedText is bounded by a timeout (rejects on stall) and the query is
+    // embedded FIRST, so a stall bails to keyword search immediately instead of
+    // attempting N backfill embeds that each hit the same stall (N x timeout).
     const memories: MemoryItem[] = [
-      mem('fact', 'Likes green tea', 1, [1, 0], 'm1'),
-      mem('fact', 'Owns a bicycle', 2, [0, 1], 'm1'),
+      // Two memories that still need embedding: if backfill were attempted before
+      // the query, each would hit the same stall and multiply the delay.
+      mem('fact', 'Likes green tea', 1),
+      mem('fact', 'Owns a bicycle', 2),
     ]
     const embedText = vi.fn(async () => {
-      throw new Error('worker down')
+      throw new Error('embedding timed out')
     })
+    const setEmbedding = vi.fn(async () => undefined)
 
-    const result = await runSemanticRecall('tea', { memories, embedText, setEmbedding: vi.fn(async () => undefined), model: 'm1' }, {})
-    // Keyword substring match still works despite embedding failure.
+    const result = await runSemanticRecall('tea', { memories, embedText, setEmbedding, model: 'm1' }, {})
+    // Keyword substring match still works despite the embedding stall.
     expect(result.map(m => m.text)).toEqual(['Likes green tea'])
+    // Only the query embed was attempted (1 call); no per-item backfill, so a
+    // stall costs one timeout, not one per memory.
+    expect(embedText).toHaveBeenCalledTimes(1)
+    expect(setEmbedding).not.toHaveBeenCalled()
   })
 
   it('falls back to keyword search when no semantic match clears minScore', async () => {
