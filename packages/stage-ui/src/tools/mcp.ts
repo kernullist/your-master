@@ -62,6 +62,68 @@ export interface McpCallToolResult {
 }
 
 /**
+ * Max characters of MCP tool-result text fed back to the model. Web tools
+ * (e.g. Tavily extract/crawl) return whole-page `raw_content` — measured at
+ * 57KB-424KB per call — which, sent back as a tool result, blows up the LLM
+ * context and makes local servers (LM Studio/llama.cpp) stall mid-stream or
+ * return 500. Capping keeps enough content to answer while protecting the
+ * context. ~12K chars is roughly 3-4K tokens.
+ */
+export const MAX_MCP_RESULT_CHARS = 12_000
+
+/**
+ * Caps the total text size of an MCP tool result so a huge payload cannot
+ * overflow the model context. Walks `content` text blocks, truncating once the
+ * budget is exhausted and marking how much was dropped; non-text blocks pass
+ * through. Returns the original object unchanged when already within budget.
+ *
+ * Before:
+ * - { content: [{ type: 'text', text: <424KB page dump> }] }
+ *
+ * After:
+ * - { content: [{ type: 'text', text: '<first 12K chars>\n...[truncated N chars]' }] }
+ */
+export function capMcpToolResult<T extends McpCallToolResult>(result: T, maxChars = MAX_MCP_RESULT_CHARS): T {
+  if (!result || !Array.isArray(result.content)) {
+    return result
+  }
+
+  let used = 0
+  let truncated = false
+  const content: Array<Record<string, unknown>> = []
+  for (const block of result.content) {
+    if (used >= maxChars) {
+      truncated = true
+      break
+    }
+    if (block && block.type === 'text' && typeof block.text === 'string') {
+      const text = block.text
+      const remaining = maxChars - used
+      if (text.length > remaining) {
+        content.push({ ...block, text: `${text.slice(0, remaining)}\n...[truncated ${text.length - remaining} chars]` })
+        used = maxChars
+        truncated = true
+      }
+      else {
+        content.push(block)
+        used += text.length
+      }
+    }
+    else {
+      content.push(block)
+    }
+  }
+
+  if (!truncated) {
+    return result
+  }
+  // Drop structuredContent when truncating: it can carry the same oversized
+  // payload and would defeat the cap if the model reads it.
+  const { structuredContent: _dropped, ...rest } = result
+  return { ...rest, content } as T
+}
+
+/**
  * Runtime contract for wiring MCP tool discovery and execution into `stage-ui`.
  *
  * Use when:
@@ -112,7 +174,7 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
       execute: async ({ name, arguments: argsJson }) => {
         try {
           const args = argsJson ? JSON.parse(argsJson) : {}
-          return await runtime.callTool({ name, arguments: args })
+          return capMcpToolResult(await runtime.callTool({ name, arguments: args }))
         }
         catch (error) {
           return {
@@ -215,10 +277,10 @@ export async function createFlattenedMcpTools(runtime: McpToolRuntime): Promise<
     description: descriptor.description?.trim() || `MCP tool "${descriptor.toolName}" from server "${descriptor.serverName}".`,
     execute: async (params) => {
       try {
-        return await runtime.callTool({
+        return capMcpToolResult(await runtime.callTool({
           name: descriptor.name,
           arguments: (params ?? {}) as Record<string, unknown>,
-        })
+        }))
       }
       catch (error) {
         return {

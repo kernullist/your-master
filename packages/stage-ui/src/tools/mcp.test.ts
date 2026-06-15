@@ -4,7 +4,7 @@ import type { McpToolDescriptor } from './mcp'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { createFlattenedMcpTools, mcp, normalizeMcpInputSchema, sanitizeMcpToolName } from './mcp'
+import { capMcpToolResult, createFlattenedMcpTools, MAX_MCP_RESULT_CHARS, mcp, normalizeMcpInputSchema, sanitizeMcpToolName } from './mcp'
 
 describe('tools mcp schema', () => {
   it('emits strict parameter objects', async () => {
@@ -76,6 +76,51 @@ describe('normalizeMcpInputSchema', () => {
 // instead of searching) or mangled the qualified name when calling. With the
 // tools flattened, `tavily_search`-style entries appear directly in the
 // model's tool list with their real descriptions and schemas.
+describe('capMcpToolResult', () => {
+  // ROOT CAUSE:
+  //
+  // Tavily web tools (extract/crawl) return whole-page raw_content (57KB-424KB
+  // measured). Sent back verbatim as a tool result, that overflowed the LLM
+  // context and made LM Studio stall mid-stream or 500 — which is why hangs
+  // happened mainly during "web research". Capping the result fixes it.
+  it('returns the result unchanged when within budget', () => {
+    const result = { content: [{ type: 'text', text: 'short' }] }
+    expect(capMcpToolResult(result)).toBe(result)
+  })
+
+  it('truncates oversized text content and marks how much was dropped', () => {
+    const big = 'a'.repeat(MAX_MCP_RESULT_CHARS + 5000)
+    const capped = capMcpToolResult({ content: [{ type: 'text', text: big }] })
+    const text = capped.content![0].text as string
+    expect(text.length).toBeLessThan(big.length)
+    expect(text).toContain('[truncated 5000 chars]')
+    expect(text.startsWith('a'.repeat(100))).toBe(true)
+  })
+
+  it('caps across multiple blocks and drops the overflow tail', () => {
+    const capped = capMcpToolResult({
+      content: [
+        { type: 'text', text: 'b'.repeat(MAX_MCP_RESULT_CHARS) },
+        { type: 'text', text: 'should be dropped' },
+      ],
+    })
+    expect(capped.content).toHaveLength(1)
+  })
+
+  it('drops structuredContent when truncating so it cannot smuggle the payload', () => {
+    const capped = capMcpToolResult({
+      content: [{ type: 'text', text: 'c'.repeat(MAX_MCP_RESULT_CHARS + 1) }],
+      structuredContent: { huge: 'x'.repeat(99999) },
+    })
+    expect(capped.structuredContent).toBeUndefined()
+  })
+
+  it('passes through results without a content array', () => {
+    const result = { structuredContent: { ok: true } }
+    expect(capMcpToolResult(result)).toBe(result)
+  })
+})
+
 describe('createFlattenedMcpTools', () => {
   it('exposes one first-class tool per MCP descriptor', async () => {
     const callTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'result' }] })
