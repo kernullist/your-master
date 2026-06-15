@@ -140,6 +140,18 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const TURN_WATCHDOG_MS = 180_000
 
   /**
+   * Max silence allowed mid-stream before the LLM call is aborted. The overall
+   * turn watchdog only recovers after TURN_WATCHDOG_MS; this catches the common
+   * `streaming`-phase hang far sooner — LM Studio / llama.cpp sometimes stops
+   * emitting tokens without closing the SSE stream (stalled generation, a
+   * tool-grammar hiccup), so xsai's reader awaits forever. Resetting on every
+   * stream event means a legitimately slow model never trips it; only true
+   * silence does. Aborting surfaces a fast, retriable error and keeps any
+   * partial reply that already arrived.
+   */
+  const STREAM_IDLE_TIMEOUT_MS = 60_000
+
+  /**
    * Coarse label of what the current turn is doing, updated as performSend
    * progresses. The watchdog logs this so a hang is attributed to a concrete
    * phase (e.g. "hooks:responseEnd") instead of a vague "stuck".
@@ -527,14 +539,44 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       let llmFirstTokenEmitted = false
 
       setTurnPhase('streaming')
+      // Stream idle-abort: if the model goes silent mid-stream (no event for
+      // STREAM_IDLE_TIMEOUT_MS) the SSE read would otherwise hang until the
+      // turn watchdog. Abort the underlying request so the turn ends fast and
+      // keeps whatever partial reply already arrived.
+      const streamAbort = new AbortController()
+      let streamIdleAborted = false
+      let streamIdleTimer: ReturnType<typeof setTimeout> | undefined
+      // While a tool call is executing the stream is legitimately silent (the
+      // tool may even be awaiting the user's approval), so the idle timer is
+      // paused for the duration; it only guards LLM token silence.
+      let pendingToolCalls = 0
+      const bumpStreamIdle = () => {
+        if (streamIdleTimer)
+          clearTimeout(streamIdleTimer)
+        if (pendingToolCalls > 0)
+          return
+        streamIdleTimer = setTimeout(() => {
+          streamIdleAborted = true
+          streamAbort.abort()
+        }, STREAM_IDLE_TIMEOUT_MS)
+      }
+      bumpStreamIdle()
       try {
         await llmStore.stream(options.model, options.chatProvider, newMessages as Message[], {
           headers,
           tools: options.tools,
+          abortSignal: streamAbort.signal,
           // NOTICE: xsai stream may emit `finish` before tool steps continue, so keep waiting until
           // the final non-tool finish to avoid ending the chat turn with no assistant reply.
           waitForTools: true,
           onStreamEvent: async (event: StreamEvent) => {
+            // Track in-flight tool calls so the idle timer pauses during tool
+            // execution, then reset it: any event means the model is alive.
+            if (event.type === 'tool-call')
+              pendingToolCalls += 1
+            else if (event.type === 'tool-result' || event.type === 'tool-error')
+              pendingToolCalls = Math.max(0, pendingToolCalls - 1)
+            bumpStreamIdle()
             switch (event.type) {
               case 'tool-call':
                 toolCallQueue.enqueue({
@@ -613,7 +655,21 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
         llmSpan.setAttribute(IOAttributes.LLMTextLength, fullText.length)
       }
+      catch (error) {
+        // Swallow our own idle-abort so the partial reply is still persisted and
+        // the turn ends gracefully; rethrow any other stream error unchanged.
+        if (!streamIdleAborted)
+          throw error
+
+        console.warn(`[chat] stream idle-aborted after ${STREAM_IDLE_TIMEOUT_MS}ms of silence; keeping partial reply.`)
+        const notice = '\n\n(모델이 응답 도중 멈춰서 중단했어. 다시 시도해줘.)'
+        fullText += notice
+        buildingMessage.content += notice
+        buildingMessage.slices.push({ type: 'text', text: notice })
+      }
       finally {
+        if (streamIdleTimer)
+          clearTimeout(streamIdleTimer)
         // TODO: Record errors on llmSpan
         llmSpan.end()
       }
