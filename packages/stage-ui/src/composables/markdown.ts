@@ -18,6 +18,15 @@ type MarkdownProcessor = Processor<any, any, any, any, string>
 const processorCache = new Map<string, Promise<MarkdownProcessor>>()
 const langRegex = /```(.{2,})\s/g
 
+/**
+ * KaTeX options. `strict: 'ignore'` silences the per-character
+ * "Unicode text character ... used in math mode" console warnings that flood
+ * the log when an assistant reply contains `$`-delimited spans wrapping
+ * non-Latin (e.g. Korean) text — a false "math" detection by remark-math.
+ * KaTeX still renders best-effort; we just stop warning about each glyph.
+ */
+const katexOptions: Parameters<typeof rehypeKatex>[0] = { output: 'mathml', strict: 'ignore' }
+
 function extractLangs(markdown: string): BundledLanguage[] {
   const matches = markdown.matchAll(langRegex)
   const langs = new Set<BundledLanguage>()
@@ -63,7 +72,7 @@ async function createProcessor(langs: BundledLanguage[]): Promise<MarkdownProces
     .use(RemarkParse)
     .use(remarkMath)
     .use(RemarkRehype)
-    .use(measuredKatex, { output: 'mathml' })
+    .use(measuredKatex, katexOptions)
     .use(rehypeShiki, options)
     .use(RehypeStringify)
 }
@@ -85,7 +94,7 @@ export function useMarkdown() {
     .use(RemarkParse)
     .use(remarkMath)
     .use(RemarkRehype)
-    .use(measuredKatex, { output: 'mathml' })
+    .use(measuredKatex, katexOptions)
     .use(RehypeStringify)
 
   return {

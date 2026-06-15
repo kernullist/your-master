@@ -2077,6 +2077,16 @@ export const useProvidersStore = defineStore('providers', () => {
       }
 
       const loop = useIntervalFn(() => {
+        // Only periodically re-validate providers the user actually added.
+        // Built-in local providers (Ollama and LM Studio) ship with a 15s
+        // validation schedule and a localhost baseUrl, so without this gate the
+        // app probes e.g. http://localhost:11434 every 15s forever even when the
+        // user never set Ollama up — flooding the console/network with
+        // connection-refused errors. Checked per tick so adding a provider later
+        // starts its polling without a restart.
+        if (!addedProviders.value[providerId])
+          return
+
         void validateProvider(providerId, { force: true })
       }, intervalMs, { immediate: false, immediateCallback: false })
       loop.resume()
