@@ -114,16 +114,26 @@ export default defineConfig({
       include: [
         // Direct dependencies of this app (resolvable from the project root).
         '@huggingface/transformers',
+        // Embedding stack for semantic memory recall (lazily imported by
+        // stage-ui's memory-embeddings.ts) and the TTS engine: all reached only
+        // after the chat store mounts, so Vite's startup scan misses them and
+        // re-optimizes mid-session, force-reloading the renderer (the character
+        // and chat appear to "reload"). Declaring them as direct app deps makes
+        // the bare names resolvable from the app root, so pre-bundling works and
+        // the mid-session reload is gone.
+        '@xsai-transformers/embed',
+        '@xsai/embed',
+        'kokoro-js',
         'three/examples/jsm/controls/OrbitControls.js',
         'three/examples/jsm/lights/LightProbeGenerator.js',
         'three/examples/jsm/loaders/RGBELoader.js',
         'valibot',
         // Nested dependencies of workspace packages: bare names are NOT
         // resolvable from the app root under pnpm isolation and get silently
-        // ignored, so use vite's `parent > child` form. (kokoro-js and
-        // @stdlib/* sit behind the source-aliased @proj-airi/stage-ui and
-        // cannot be pre-bundled this way — the router-level reload recovery
-        // in src/renderer/main.ts covers those.)
+        // ignored, so use vite's `parent > child` form. (@stdlib/* sits behind
+        // the source-aliased @proj-airi/stage-ui and cannot be pre-bundled this
+        // way — the router-level reload recovery in src/renderer/main.ts covers
+        // those.)
         '@proj-airi/stage-ui-live2d > pixi-filters',
         '@proj-airi/stage-ui-three > @tresjs/post-processing',
         '@proj-airi/stage-ui-three > postprocessing',
