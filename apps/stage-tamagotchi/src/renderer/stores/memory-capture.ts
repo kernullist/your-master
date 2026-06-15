@@ -17,6 +17,23 @@ export const MAX_EXTRACTED_PER_TURN = 5
 const MAX_EXTRACTED_TEXT_CHARS = 300
 
 /**
+ * Hard cap on how long a background extraction may run before it is aborted.
+ * Capture runs a full LLM generation after every turn; with a single local
+ * server (e.g. LM Studio) and a slow reasoning model, an unbounded capture
+ * keeps the server busy and makes the user's NEXT turn queue behind it (the
+ * chat appears stuck "thinking"). Bounding it frees the server promptly.
+ */
+const CAPTURE_TIMEOUT_MS = 30_000
+
+/**
+ * Guards against overlapping captures. Capture is fire-and-forget, so without
+ * this a fast back-and-forth could launch several concurrent extractions that
+ * all contend for the single LLM server. One at a time is enough; if a turn
+ * fires while a capture is in flight, we skip it (the next turn captures).
+ */
+let captureInFlight = false
+
+/**
  * Parses the extractor LLM's raw output into validated memory items.
  *
  * Before:
@@ -128,6 +145,13 @@ export async function extractAndStoreMemories(deps: {
     return []
   }
 
+  // Skip if a capture is already running: overlapping extractions would just
+  // contend for the single LLM server and slow the user's live chat.
+  if (captureInFlight) {
+    return []
+  }
+
+  captureInFlight = true
   try {
     const memoryStore = useChatMemoryStore()
     await memoryStore.ensureLoaded(characterId)
@@ -138,6 +162,9 @@ export async function extractAndStoreMemories(deps: {
       ...chatConfig,
       messages: buildExtractionMessages(userText, assistantText, knownTexts),
       headers: { 'Accept-Encoding': 'identity' },
+      // Bound the call so a slow reasoning model cannot keep the LLM server
+      // busy indefinitely and starve the user's next turn.
+      abortSignal: AbortSignal.timeout(CAPTURE_TIMEOUT_MS),
     })
 
     const extracted = parseExtractedMemories(response.text ?? '')
@@ -149,5 +176,8 @@ export async function extractAndStoreMemories(deps: {
   catch (error) {
     console.warn('[memory-capture] extraction failed (ignored):', error)
     return []
+  }
+  finally {
+    captureInFlight = false
   }
 }

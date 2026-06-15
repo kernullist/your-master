@@ -129,6 +129,31 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const pendingQueuedSendCount = computed(() => pendingQueuedSends.value.length)
   const hooks = createChatHooks()
 
+  /**
+   * Hard ceiling on one chat turn. A turn normally ends when the LLM stream and
+   * its post-stream hooks finish; if something downstream hangs (a hook awaiting
+   * a dead service, a renderer freeze), performSend never returns, the send
+   * queue worker stays blocked, and the UI is stuck "thinking" forever with no
+   * recovery. The watchdog frees it. Generous so it never fires on a
+   * legitimately slow reasoning model.
+   */
+  const TURN_WATCHDOG_MS = 180_000
+
+  /**
+   * Coarse label of what the current turn is doing, updated as performSend
+   * progresses. The watchdog logs this so a hang is attributed to a concrete
+   * phase (e.g. "hooks:responseEnd") instead of a vague "stuck".
+   */
+  let currentTurnPhase = 'idle'
+
+  // Records the current turn phase and traces the transition, so a stall is
+  // visible in the console immediately (the last phase logged is where it hung)
+  // without waiting for the watchdog to fire.
+  function setTurnPhase(phase: string) {
+    currentTurnPhase = phase
+    console.info(`[chat] turn phase: ${phase}`)
+  }
+
   const sendQueue = createQueue<QueuedSend>({
     handlers: [
       async ({ data }) => {
@@ -142,12 +167,40 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
           return
         }
 
+        // Race the turn against a watchdog so a hung downstream step (a
+        // post-stream hook awaiting a dead service, a frozen renderer) cannot
+        // block the queue worker and leave the UI stuck "thinking" forever.
+        const watchdogError = new Error('chat turn watchdog timeout')
+        let watchdogTimer: ReturnType<typeof setTimeout> | undefined
+        const watchdog = new Promise<never>((_, reject) => {
+          watchdogTimer = setTimeout(reject, TURN_WATCHDOG_MS, watchdogError)
+        })
+
         try {
-          await performSend(sendingMessage, options, generation, sessionId)
+          await Promise.race([performSend(sendingMessage, options, generation, sessionId), watchdog])
           deferred.resolve()
         }
         catch (error) {
+          if (error === watchdogError) {
+            // Recover: neutralize the orphaned turn (its remaining
+            // generation-guarded steps no-op), unstick the UI, and tell the
+            // user. The orphaned performSend keeps running but is now stale.
+            console.error(`[chat] turn watchdog fired in phase "${currentTurnPhase}"; recovering. The turn did not finish within ${TURN_WATCHDOG_MS}ms.`)
+            chatSession.bumpSessionGeneration(sessionId)
+            sending.value = false
+            chatSession.appendSessionMessage(sessionId, {
+              role: 'error',
+              content: '응답이 시간 내에 끝나지 않아 중단했어. 다시 시도해줘.',
+              createdAt: Date.now(),
+              id: nanoid(),
+            })
+          }
           deferred.reject(error)
+        }
+        finally {
+          if (watchdogTimer) {
+            clearTimeout(watchdogTimer)
+          }
         }
       },
     ],
@@ -465,6 +518,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       const llmRequestTs = performance.now()
       let llmFirstTokenEmitted = false
 
+      setTurnPhase('streaming')
       try {
         await llmStore.stream(options.model, options.chatProvider, newMessages as Message[], {
           headers,
@@ -556,6 +610,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         llmSpan.end()
       }
 
+      setTurnPhase('persist')
       await parser.end()
 
       if (!isStaleGeneration()) {
@@ -586,16 +641,25 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         }
       }
 
+      // Post-stream hooks. Each is labeled so the watchdog can name a hung hook
+      // (these run registered side effects — speech, mods, telemetry — any of
+      // which could await a slow/dead service and stall the turn).
+      setTurnPhase('hooks:streamEnd')
       await hooks.emitStreamEndHooks(streamingMessageContext)
+      setTurnPhase('hooks:responseEnd')
       await hooks.emitAssistantResponseEndHooks(fullText, streamingMessageContext)
 
+      setTurnPhase('hooks:afterSend')
       await hooks.emitAfterSendHooks(sendingMessage, streamingMessageContext)
+      setTurnPhase('hooks:assistantMessage')
       await hooks.emitAssistantMessageHooks({ ...buildingMessage }, fullText, streamingMessageContext)
+      setTurnPhase('hooks:turnComplete')
       await hooks.emitChatTurnCompleteHooks({
         output: { ...buildingMessage },
         outputText: fullText,
         toolCalls: sessionMessagesForSend.filter(msg => msg.role === 'tool') as ToolMessage[],
       }, streamingMessageContext)
+      setTurnPhase('done')
 
       // --- AUTONOMOUS ARTISTRY HOOK (ASSISTANT-CENTRIC) ---
       const artistry = cardStore.activeCard?.extensions?.airi?.modules?.artistry
