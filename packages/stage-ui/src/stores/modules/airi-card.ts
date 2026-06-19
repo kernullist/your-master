@@ -10,6 +10,7 @@ import { useI18n } from 'vue-i18n'
 import SystemPromptV2 from '../../constants/prompts/system-v2'
 
 import { DEFAULT_ARTISTRY_WIDGET_SPAWNING_PROMPT } from '../../constants/prompts/character-defaults'
+import { useSettingsGeneral } from '../settings/general'
 import { useSettingsStageModel } from '../settings/stage-model'
 import { useArtistryStore } from './artistry'
 import { useConsciousnessStore } from './consciousness'
@@ -127,6 +128,31 @@ export function composeCardSystemPrompt(card: {
   return components.join('\n\n')
 }
 
+/**
+ * Appends a global "address the user as <nickname>" instruction to a composed
+ * system prompt.
+ *
+ * Use when:
+ * - A user-wide nickname setting should make the character call the user a
+ *   chosen name regardless of which character card is active.
+ *
+ * Expects:
+ * - `systemPrompt`: the already-composed card system prompt (may be empty).
+ * - `nickname`: the user's chosen name; ignored when empty/whitespace.
+ *
+ * Returns:
+ * - The system prompt with an appended instruction line, or the input
+ *   unchanged when no usable nickname is provided.
+ */
+export function appendUserAddressInstruction(systemPrompt: string, nickname?: string): string {
+  const name = nickname?.trim()
+  if (!name)
+    return systemPrompt
+
+  const instruction = `Always address the user as "${name}".`
+  return systemPrompt ? `${systemPrompt}\n\n${instruction}` : instruction
+}
+
 export const useAiriCardStore = defineStore('airi-card', () => {
   const { t } = useI18n()
 
@@ -139,6 +165,9 @@ export const useAiriCardStore = defineStore('airi-card', () => {
   const speechStore = useSpeechStore()
   const artistryStore = useArtistryStore()
   const stageModelStore = useSettingsStageModel()
+  const generalStore = useSettingsGeneral()
+
+  const { userNickname } = storeToRefs(generalStore)
 
   const {
     activeProvider: activeConsciousnessProvider,
@@ -392,9 +421,9 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     systemPrompt: computed(() => {
       const card = activeCard.value
       if (!card)
-        return ''
+        return appendUserAddressInstruction('', userNickname.value)
 
-      return composeCardSystemPrompt(card)
+      return appendUserAddressInstruction(composeCardSystemPrompt(card), userNickname.value)
     }),
   }
 })

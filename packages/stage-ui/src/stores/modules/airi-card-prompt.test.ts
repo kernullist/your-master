@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { composeCardSystemPrompt } from './airi-card'
+import { appendUserAddressInstruction, composeCardSystemPrompt } from './airi-card'
 
 // ROOT CAUSE:
 //
@@ -53,5 +53,40 @@ describe('composeCardSystemPrompt', () => {
     })
 
     expect(prompt).toBe('A\n\nB\n\nC')
+  })
+})
+
+// The user-nickname setting is global (not a card field), so it is appended
+// after the card prompt is composed. These cases lock the appended phrasing and
+// the no-op behavior for empty/whitespace nicknames.
+describe('appendUserAddressInstruction', () => {
+  it('appends an address instruction when a nickname is provided', () => {
+    const prompt = appendUserAddressInstruction('You are a cheerful companion.', '꿀보')
+
+    expect(prompt).toBe('You are a cheerful companion.\n\nAlways address the user as "꿀보".')
+  })
+
+  it('returns the instruction alone when the base prompt is empty', () => {
+    const prompt = appendUserAddressInstruction('', '꿀보')
+
+    expect(prompt).toBe('Always address the user as "꿀보".')
+  })
+
+  it('leaves the prompt unchanged for an empty nickname', () => {
+    const prompt = appendUserAddressInstruction('base prompt', '')
+
+    expect(prompt).toBe('base prompt')
+  })
+
+  it('leaves the prompt unchanged for a whitespace-only nickname', () => {
+    const prompt = appendUserAddressInstruction('base prompt', '   ')
+
+    expect(prompt).toBe('base prompt')
+  })
+
+  it('trims surrounding whitespace from the nickname', () => {
+    const prompt = appendUserAddressInstruction('base prompt', '  Kuelbo  ')
+
+    expect(prompt).toBe('base prompt\n\nAlways address the user as "Kuelbo".')
   })
 })

@@ -11,6 +11,11 @@ export const useSettingsGeneral = defineStore('settings-general', () => {
   const disableTransitions = useLocalStorageManualReset<boolean>('settings/disable-transitions', true)
   const usePageSpecificTransitions = useLocalStorageManualReset<boolean>('settings/use-page-specific-transitions', true)
 
+  // What the character should call the user. Injected globally into the active
+  // card's system prompt (see appendUserAddressInstruction), so it applies
+  // across every character card without editing each card's prompt.
+  const userNickname = useLocalStorageManualReset<string>('settings/user-nickname', '')
+
   const websocketSecureEnabled = useLocalStorageManualReset<boolean>('settings/websocket/secure-enabled', false)
 
   function getLanguage() {
@@ -29,6 +34,7 @@ export const useSettingsGeneral = defineStore('settings-general', () => {
     disableTransitions.reset()
     usePageSpecificTransitions.reset()
     websocketSecureEnabled.reset()
+    userNickname.reset()
   }
 
   onMounted(() => language.value = getLanguage())
@@ -38,6 +44,7 @@ export const useSettingsGeneral = defineStore('settings-general', () => {
     disableTransitions,
     usePageSpecificTransitions,
     websocketSecureEnabled,
+    userNickname,
     getLanguage,
     resetState,
   }

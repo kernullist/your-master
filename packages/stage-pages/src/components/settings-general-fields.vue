@@ -2,8 +2,9 @@
 import { all } from '@proj-airi/i18n'
 import { useAnalytics } from '@proj-airi/stage-ui/composables/use-analytics'
 import { isPosthogAvailableInBuild } from '@proj-airi/stage-ui/stores/analytics'
-import { useSettings } from '@proj-airi/stage-ui/stores/settings'
-import { FieldCheckbox, FieldCombobox, useTheme } from '@proj-airi/ui'
+import { useSettings, useSettingsGeneral } from '@proj-airi/stage-ui/stores/settings'
+import { FieldCheckbox, FieldCombobox, FieldInput, useTheme } from '@proj-airi/ui'
+import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -14,6 +15,7 @@ const props = withDefaults(defineProps<{
 })
 
 const settings = useSettings()
+const { userNickname } = storeToRefs(useSettingsGeneral())
 
 const showControlsIsland = computed(() => props.needsControlsIslandIconSizeSetting)
 const showAnalyticsSettings = computed(() => isPosthogAvailableInBuild())
@@ -57,6 +59,19 @@ const languages = computed(() => {
       :description="t('settings.language.description')"
       layout="horizontal"
       :options="languages"
+    />
+
+    <FieldInput
+      v-model="userNickname"
+      v-motion
+      :initial="{ opacity: 0, y: 10 }"
+      :enter="{ opacity: 1, y: 0 }"
+      :duration="250 + (3 * 10)"
+      :delay="3 * 50"
+      :class="['transition-all', 'ease-in-out', 'duration-250']"
+      :label="t('settings.user-nickname.title')"
+      :description="t('settings.user-nickname.description')"
+      :placeholder="t('settings.user-nickname.placeholder')"
     />
 
     <FieldCombobox

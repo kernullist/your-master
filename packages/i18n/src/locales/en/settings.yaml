@@ -90,6 +90,11 @@ language:
   title: Language
   description: |
     UI language. You can set characters' language later.
+user-nickname:
+  title: What should I call you?
+  description: |
+    The name the character will use to address you. Applies to every character.
+  placeholder: e.g. your name or nickname
 controls-island:
   icon-size:
     title: Controls Island Icon Size

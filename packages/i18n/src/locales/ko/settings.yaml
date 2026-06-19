@@ -82,6 +82,11 @@ language:
   title: 언어
   description: |
     UI 언어에요. 캐릭터의 언어는 나중에 바꿀 수 있어요.
+user-nickname:
+  title: 나를 뭐라고 부를까요?
+  description: |
+    캐릭터가 당신을 부를 이름이에요. 모든 캐릭터에 적용돼요.
+  placeholder: 예) 이름이나 별명
 controls-island:
   icon-size:
     title: 아일랜드 아이콘 크기 조정
