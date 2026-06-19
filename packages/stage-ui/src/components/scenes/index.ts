@@ -1,3 +1,4 @@
+export { default as SceneImage } from './ImageScene.vue'
 export { default as WidgetStage } from './Stage.vue'
 export {
   Live2DCanvas,

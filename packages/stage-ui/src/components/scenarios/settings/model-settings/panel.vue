@@ -61,7 +61,8 @@ async function handleModelPick(selectedModel: DisplayModel | undefined) {
     <Callout label="We support both 2D and 3D models">
       <p>
         Click <strong>Select Model</strong> to import different formats of
-        models into catalog, currently, <code>.zip</code> (Live2D) and <code>.vrm</code> (VRM) are supported.
+        models into catalog, currently, <code>.zip</code> (Live2D), <code>.vrm</code> (VRM),
+        and a single image (PNG/JPG/WebP, shown as a static avatar with idle motion) are supported.
       </p>
       <p>
         Neuro-sama uses 2D model driven by Live2D Inc. developed framework.

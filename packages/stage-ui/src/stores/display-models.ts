@@ -12,6 +12,9 @@ export enum DisplayModelFormat {
   PMXZip = 'pmx-zip',
   PMXDirectory = 'pmx-directory',
   PMD = 'pmd',
+  // Static single-image avatar: a flat PNG/JPG/WebP shown as the character with
+  // procedural idle motion (no rig, so no blink/lip-sync/expression).
+  Image = 'image',
 }
 
 export type DisplayModel
@@ -32,6 +35,10 @@ const presetVrmAvatarAUrl = new URL('../assets/vrm/models/AvatarSample-A/AvatarS
 const presetVrmAvatarAPreview = new URL('../assets/vrm/models/AvatarSample-A/preview.png', import.meta.url).href
 const presetVrmAvatarBUrl = new URL('../assets/vrm/models/AvatarSample-B/AvatarSample_B.vrm', import.meta.url).href
 const presetVrmAvatarBPreview = new URL('../assets/vrm/models/AvatarSample-B/preview.png', import.meta.url).href
+// Static-image avatar preset: a single illustration shown with procedural idle
+// motion (breathing/sway/float) via the 'image' renderer. The image doubles as
+// its own preview thumbnail.
+const presetImageKitsuneUrl = new URL('../assets/image/models/kitsune/character.png', import.meta.url).href
 
 export interface DisplayModelFile {
   id: string
@@ -54,6 +61,7 @@ export interface DisplayModelURL {
 }
 
 const displayModelsPresets: DisplayModel[] = [
+  { id: 'preset-image-kitsune', format: DisplayModelFormat.Image, type: 'url', url: presetImageKitsuneUrl, name: 'Kitsune (Image)', previewImage: presetImageKitsuneUrl, importedAt: 1733113886843 },
   { id: 'preset-live2d-airi-blue', format: DisplayModelFormat.Live2dZip, type: 'url', url: presetLive2dAiriBlueUrl, name: 'Hiyori (AIRI Blue)', previewImage: presetLive2dAiriBluePreview, importedAt: 1733113886842 },
   { id: 'preset-live2d-mao', format: DisplayModelFormat.Live2dZip, type: 'url', url: presetLive2dMaoUrl, name: 'Niziiro Mao', previewImage: presetLive2dMaoPreview, importedAt: 1733113886841 },
   { id: 'preset-live2d-1', format: DisplayModelFormat.Live2dZip, type: 'url', url: presetLive2dProUrl, name: 'Hiyori (Pro)', previewImage: presetLive2dPreview, importedAt: 1733113886840 },
@@ -61,6 +69,28 @@ const displayModelsPresets: DisplayModel[] = [
   { id: 'preset-vrm-1', format: DisplayModelFormat.VRM, type: 'url', url: presetVrmAvatarAUrl, name: 'AvatarSample_A', previewImage: presetVrmAvatarAPreview, importedAt: 1733113886840 },
   { id: 'preset-vrm-2', format: DisplayModelFormat.VRM, type: 'url', url: presetVrmAvatarBUrl, name: 'AvatarSample_B', previewImage: presetVrmAvatarBPreview, importedAt: 1733113886840 },
 ]
+
+/**
+ * Reads a File into a base64 `data:` URL.
+ *
+ * Use when:
+ * - You need a persistable image string (e.g. a thumbnail stored in localforage)
+ *   rather than a transient `blob:` object URL that is revoked on page unload.
+ *
+ * Expects:
+ * - A readable image File (PNG/JPG/WebP); rejects if the read fails.
+ *
+ * Returns:
+ * - A `data:<mime>;base64,...` string.
+ */
+function readFileAsDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'))
+    reader.readAsDataURL(file)
+  })
+}
 
 export const useDisplayModelsStore = defineStore('display-models', () => {
   const displayModels = ref<DisplayModel[]>([])
@@ -116,6 +146,11 @@ export const useDisplayModelsStore = defineStore('display-models', () => {
     else if (format === DisplayModelFormat.VRM) {
       const previewImage = await loadVrmModelPreview(file)
       newDisplayModel.previewImage = previewImage
+    }
+    else if (format === DisplayModelFormat.Image) {
+      // For a static image avatar the file itself is the preview. Persist it as a
+      // data URL so the thumbnail survives reloads (object URLs are revoked on unload).
+      newDisplayModel.previewImage = await readFileAsDataURL(file)
     }
 
     displayModels.value.unshift(newDisplayModel)

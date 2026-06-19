@@ -22,6 +22,8 @@ import { generateSpeech } from '@xsai/generate-speech'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
+import ImageScene from './ImageScene.vue'
+
 import { useDelayMessageQueue, useEmotionsMessageQueue } from '../../composables/queues'
 import { useAuthProviderSync } from '../../composables/use-auth-provider-sync'
 import { useDuckDb } from '../../composables/use-duck-db'
@@ -668,6 +670,16 @@ defineExpose({
         :show-axes="stageViewControlsEnabled"
         :current-audio-source="currentAudioSource"
         @error="console.error"
+      />
+      <ImageScene
+        v-if="stageModelRenderer === 'image' && showStage"
+        v-model:state="componentState"
+        min-w="50% <lg:full" min-h="100 sm:100" h-full w-full flex-1
+        :model-src="stageModelSelectedUrl"
+        :paused="paused"
+        :x-offset="xOffset"
+        :y-offset="yOffset"
+        :scale="scale"
       />
       <div
         v-if="stageModelRenderer === 'godot'"

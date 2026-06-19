@@ -59,6 +59,17 @@ function handleAddVRMModel(file: FileList | null) {
   displayModelStore.addDisplayModel(DisplayModelFormat.VRM, file[0])
 }
 
+function handleAddImageModel(file: FileList | null) {
+  if (file === null || file.length === 0)
+    return
+  // Accept any browser-decodable raster image; a single flat image becomes a
+  // static avatar with procedural idle motion (no rig).
+  if (!file[0].type.startsWith('image/'))
+    return
+
+  displayModelStore.addDisplayModel(DisplayModelFormat.Image, file[0])
+}
+
 const mapFormatRenderer: Record<DisplayModelFormat, string> = {
   [DisplayModelFormat.Live2dZip]: 'Live2D',
   [DisplayModelFormat.Live2dDirectory]: 'Live2D',
@@ -66,13 +77,16 @@ const mapFormatRenderer: Record<DisplayModelFormat, string> = {
   [DisplayModelFormat.PMXDirectory]: 'MMD',
   [DisplayModelFormat.PMXZip]: 'MMD',
   [DisplayModelFormat.PMD]: 'MMD',
+  [DisplayModelFormat.Image]: 'Image',
 }
 
 const live2dDialog = useFileDialog({ accept: '.zip', multiple: false, reset: true })
 const vrmDialog = useFileDialog({ accept: '.vrm', multiple: false, reset: true })
+const imageDialog = useFileDialog({ accept: 'image/*', multiple: false, reset: true })
 
 live2dDialog.onChange(handleAddLive2DModel)
 vrmDialog.onChange(handleAddVRMModel)
+imageDialog.onChange(handleAddImageModel)
 </script>
 
 <template>
@@ -124,6 +138,17 @@ vrmDialog.onChange(handleAddVRMModel)
                 transition="colors duration-200 ease-in-out" @click="vrmDialog.open()"
               >
                 VRM
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                :class="[
+                  'data-[disabled]:text-mauve8 relative flex cursor-pointer select-none items-center rounded-md px-3 py-2 leading-none outline-none data-[disabled]:pointer-events-none',
+                  'text-base sm:text-sm',
+                  'data-[highlighted]:bg-primary-300/20 dark:data-[highlighted]:bg-primary-100/20',
+                  'data-[highlighted]:text-primary-400 dark:data-[highlighted]:text-primary-200',
+                ]"
+                transition="colors duration-200 ease-in-out" @click="imageDialog.open()"
+              >
+                Image
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenuPortal>

@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
 import { useSettings } from '../../../../stores/settings'
+import { SceneImage } from '../../../scenes'
 import {
   createEmptyModelSettingsRuntimeSnapshot,
   resolveComponentStateToRuntimePhase,
@@ -106,6 +107,18 @@ const runtimeSnapshot = computed<ModelSettingsRuntimeSnapshot>(() => {
     })
   }
 
+  if (stageModelRenderer.value === 'image') {
+    return createEmptyModelSettingsRuntimeSnapshot({
+      ownerInstanceId: vrmPreviewStageInstanceId,
+      renderer: 'image',
+      phase: hasModel ? 'mounted' : 'no-model',
+      controlsLocked: false,
+      previewAvailable: hasModel,
+      canCapturePreview: false,
+      updatedAt: Date.now(),
+    })
+  }
+
   if (stageModelRenderer.value === 'godot') {
     return createEmptyModelSettingsRuntimeSnapshot({
       ownerInstanceId: vrmPreviewStageInstanceId,
@@ -156,6 +169,11 @@ defineExpose({
   <template v-if="stageModelRenderer === 'vrm'">
     <div :class="vrmSceneClassList">
       <ThreeScene ref="vrmSceneRef" :model-src="stageModelSelectedUrl" />
+    </div>
+  </template>
+  <template v-if="stageModelRenderer === 'image'">
+    <div :class="live2dSceneClassList">
+      <SceneImage :model-src="stageModelSelectedUrl" />
     </div>
   </template>
 </template>
