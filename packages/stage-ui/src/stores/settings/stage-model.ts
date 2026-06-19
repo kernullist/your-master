@@ -10,9 +10,42 @@ import { DisplayModelFormat, useDisplayModelsStore } from '../display-models'
 export type StageModelRenderer = 'live2d' | 'vrm' | 'image' | 'godot' | 'disabled' | undefined
 type BuiltInStageModelRenderer = Exclude<StageModelRenderer, 'godot'>
 
+/** Object URL minted for the currently active file-backed display model. */
+interface StageObjectUrlCacheEntry {
+  modelId: string
+  url: string
+}
+
+/**
+ * Decides whether the cached object URL can be reused for a file-backed model.
+ *
+ * Use when:
+ * - updateStageModel() re-resolves a file model and wants to avoid minting a
+ *   fresh `blob:` URL (which would change stageModelSelectedUrl and force the
+ *   renderer to reload, flashing the host "Loading..." overlay).
+ *
+ * Expects:
+ * - `currentUrl` is the URL currently assigned to the stage; reuse is only safe
+ *   while it still equals the cached URL, because switching models revokes it.
+ *
+ * Returns:
+ * - `true` when the same model is still active and its object URL is live.
+ */
+export function shouldReuseStageObjectUrl(
+  cache: StageObjectUrlCacheEntry | undefined,
+  modelId: string,
+  currentUrl: string | undefined,
+): boolean {
+  return !!cache && cache.modelId === modelId && cache.url === currentUrl
+}
+
 export const useSettingsStageModel = defineStore('settings-stage-model', () => {
   const displayModelsStore = useDisplayModelsStore()
   let stageModelUpdateSequence = 0
+  // Tracks the object URL minted for the active file-backed model so repeated
+  // updateStageModel() runs for the SAME model reuse it instead of minting a
+  // new blob: URL each time (see shouldReuseStageObjectUrl).
+  let stageObjectUrlCache: StageObjectUrlCacheEntry | undefined
   const stageModelStorageKey = 'settings/stage/model'
 
   const stageModelSelectedState = useLocalStorageManualReset<string>(stageModelStorageKey, 'preset-live2d-mao')
@@ -91,12 +124,20 @@ export const useSettingsStageModel = defineStore('settings-stage-model', () => {
       stageModelRenderer.value = builtInRenderer
 
     if (model.type === 'file') {
+      // Same file model still active: reuse the existing object URL so the
+      // renderer is not forced to reload (which flashes the Loading overlay).
+      if (shouldReuseStageObjectUrl(stageObjectUrlCache, model.id, stageModelSelectedUrl.value)) {
+        stageModelSelectedDisplayModel.value = model
+        return
+      }
+
       const nextUrl = URL.createObjectURL(model.file)
       if (requestId !== stageModelUpdateSequence) {
         URL.revokeObjectURL(nextUrl)
         return
       }
 
+      stageObjectUrlCache = { modelId: model.id, url: nextUrl }
       replaceStageModelUrl(nextUrl)
     }
     else {
@@ -128,6 +169,9 @@ export const useSettingsStageModel = defineStore('settings-stage-model', () => {
 
   async function resetState() {
     revokeStageModelUrl(stageModelSelectedUrl.value)
+    // Drop the object URL cache so a post-reset reload mints a fresh URL
+    // instead of reusing one that was just revoked.
+    stageObjectUrlCache = undefined
 
     stageModelSelectedState.reset()
     stageModelSelectedDisplayModel.reset()
