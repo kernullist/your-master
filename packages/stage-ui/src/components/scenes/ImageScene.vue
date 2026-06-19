@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import type { StageComponentState } from './image-scene'
+
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+
+import { resolveImageSceneState } from './image-scene'
 
 // Static-image avatar renderer.
 //
@@ -18,9 +22,9 @@ const props = withDefaults(defineProps<{
   yOffset?: number | string
 }>(), { paused: false, scale: 1 })
 
-const componentState = defineModel<'pending' | 'loading' | 'mounted'>('state', { default: 'pending' })
+const componentState = defineModel<StageComponentState>('state', { default: 'pending' })
 
-const loaded = ref(false)
+const imgRef = ref<HTMLImageElement | null>(null)
 
 // Pause all idle motion when the stage is paused or the user prefers reduced
 // motion (handled in CSS via the media query below as well).
@@ -38,20 +42,37 @@ const containerStyle = computed(() => ({
   transform: `translate(${toLength(props.xOffset)}, ${toLength(props.yOffset)}) scale(${props.scale})`,
 }))
 
+// Reconciles the reported state with the actual <img> readiness. Needed because
+// the `load` event does not fire for an image that is already cached/decoded by
+// the time the element mounts; reading `complete`/`naturalWidth` covers that
+// case so the host's "Loading..." overlay does not get stuck (or flash) over an
+// image that is, in fact, ready.
+function syncState() {
+  const el = imgRef.value
+  componentState.value = resolveImageSceneState({
+    hasSrc: Boolean(props.modelSrc),
+    complete: el?.complete ?? false,
+    naturalWidth: el?.naturalWidth ?? 0,
+  })
+}
+
 function onImageLoad() {
-  loaded.value = true
   componentState.value = 'mounted'
 }
 
 function onImageError() {
-  loaded.value = false
   componentState.value = 'pending'
 }
 
-// Reset state whenever the source changes so a swapped avatar re-reports mounted.
-watch(() => props.modelSrc, () => {
-  loaded.value = false
-  componentState.value = 'loading'
+onMounted(syncState)
+
+// On source change the element keeps the previous frame until the new one
+// decodes, so re-check after the DOM applies the new src: a cached swap settles
+// to 'mounted' immediately, otherwise we wait in 'loading' for `load`.
+watch(() => props.modelSrc, async () => {
+  componentState.value = props.modelSrc ? 'loading' : 'pending'
+  await nextTick()
+  syncState()
 })
 </script>
 
@@ -72,6 +93,7 @@ watch(() => props.modelSrc, () => {
         h-full w-full flex items-center justify-center
       >
         <img
+          ref="imgRef"
           :src="modelSrc"
           class="image-scene-breathe"
           :style="{ animationPlayState: playState }"
