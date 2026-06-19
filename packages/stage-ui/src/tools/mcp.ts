@@ -141,6 +141,65 @@ export interface McpToolRuntime {
 }
 
 /**
+ * Default time budget for a single MCP tool invocation before it is treated as
+ * failed. A hung web-search/extract call never emits a `tool-result` stream
+ * event, and the chat turn pauses its mid-stream idle-abort while a tool is
+ * running, so without a bound only the 180s turn watchdog recovers and the UI
+ * shows "stuck in phase streaming". Bounding the call surfaces a fast,
+ * retriable tool error instead. Kept well under the turn watchdog so recovery
+ * happens long before the turn is abandoned.
+ */
+export const DEFAULT_MCP_CALL_TIMEOUT_MS = 45_000
+
+/**
+ * Invokes an MCP tool with a hard time budget.
+ *
+ * Use when:
+ * - Executing an MCP tool whose transport (network / MCP server) may hang
+ *   without responding, which would otherwise stall the entire chat turn.
+ *
+ * Expects:
+ * - `runtime.callTool` may never resolve; `timeoutMs` is a positive duration.
+ *
+ * Returns:
+ * - The tool result, or an `isError` result when the call exceeds `timeoutMs`.
+ */
+export async function callMcpToolWithTimeout(
+  runtime: McpToolRuntime,
+  payload: McpCallToolPayload,
+  timeoutMs = DEFAULT_MCP_CALL_TIMEOUT_MS,
+): Promise<McpCallToolResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<McpCallToolResult>((resolve) => {
+    timer = setTimeout(() => {
+      resolve({
+        isError: true,
+        content: [{ type: 'text', text: `MCP tool "${payload.name}" timed out after ${timeoutMs}ms` }],
+      })
+    }, timeoutMs)
+  })
+
+  // NOTICE:
+  // McpToolRuntime.callTool takes no AbortSignal, so a timed-out call cannot be
+  // cancelled and keeps running in the background. Attach a no-op catch so its
+  // late rejection (after the race already settled on the timeout) does not
+  // surface as an unhandled rejection. Recovering the turn is worth the leaked
+  // in-flight request.
+  // Removal condition: McpToolRuntime.callTool accepts an AbortSignal.
+  const call = runtime.callTool(payload)
+  call.catch(() => {})
+
+  try {
+    return await Promise.race([call, timeout])
+  }
+  finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
+}
+
+/**
  * Creates MCP proxy tools backed by a runtime-provided transport.
  *
  * Use when:
@@ -151,8 +210,13 @@ export interface McpToolRuntime {
  *
  * Returns:
  * - xsai tool definition promises for MCP listing and invocation
+ *
+ * @param runtime - MCP transport used to list and call tools.
+ * @param options - Optional overrides.
+ * @param options.callTimeoutMs - Per-call time budget; defaults to {@link DEFAULT_MCP_CALL_TIMEOUT_MS}.
  */
-export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
+export function createMcpTools(runtime: McpToolRuntime, options: { callTimeoutMs?: number } = {}): Array<Promise<Tool>> {
+  const { callTimeoutMs = DEFAULT_MCP_CALL_TIMEOUT_MS } = options
   return [
     tool({
       name: 'builtIn_mcpListTools',
@@ -174,7 +238,7 @@ export function createMcpTools(runtime: McpToolRuntime): Array<Promise<Tool>> {
       execute: async ({ name, arguments: argsJson }) => {
         try {
           const args = argsJson ? JSON.parse(argsJson) : {}
-          return capMcpToolResult(await runtime.callTool({ name, arguments: args }))
+          return capMcpToolResult(await callMcpToolWithTimeout(runtime, { name, arguments: args }, callTimeoutMs))
         }
         catch (error) {
           return {
@@ -260,8 +324,13 @@ export function normalizeMcpInputSchema(schema?: Record<string, unknown>): Recor
  * Returns:
  * - One tool per MCP descriptor, executing through `runtime.callTool` with
  *   the original qualified name.
+ *
+ * @param runtime - MCP transport used to list and call tools.
+ * @param options - Optional overrides.
+ * @param options.callTimeoutMs - Per-call time budget; defaults to {@link DEFAULT_MCP_CALL_TIMEOUT_MS}.
  */
-export async function createFlattenedMcpTools(runtime: McpToolRuntime): Promise<Tool[]> {
+export async function createFlattenedMcpTools(runtime: McpToolRuntime, options: { callTimeoutMs?: number } = {}): Promise<Tool[]> {
+  const { callTimeoutMs = DEFAULT_MCP_CALL_TIMEOUT_MS } = options
   let descriptors: McpToolDescriptor[]
   try {
     descriptors = await runtime.listTools()
@@ -277,10 +346,10 @@ export async function createFlattenedMcpTools(runtime: McpToolRuntime): Promise<
     description: descriptor.description?.trim() || `MCP tool "${descriptor.toolName}" from server "${descriptor.serverName}".`,
     execute: async (params) => {
       try {
-        return capMcpToolResult(await runtime.callTool({
+        return capMcpToolResult(await callMcpToolWithTimeout(runtime, {
           name: descriptor.name,
           arguments: (params ?? {}) as Record<string, unknown>,
-        }))
+        }, callTimeoutMs))
       }
       catch (error) {
         return {

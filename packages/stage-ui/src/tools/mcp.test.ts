@@ -4,7 +4,7 @@ import type { McpToolDescriptor } from './mcp'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { capMcpToolResult, createFlattenedMcpTools, MAX_MCP_RESULT_CHARS, mcp, normalizeMcpInputSchema, sanitizeMcpToolName } from './mcp'
+import { callMcpToolWithTimeout, capMcpToolResult, createFlattenedMcpTools, MAX_MCP_RESULT_CHARS, mcp, normalizeMcpInputSchema, sanitizeMcpToolName } from './mcp'
 
 describe('tools mcp schema', () => {
   it('emits strict parameter objects', async () => {
@@ -161,5 +161,61 @@ describe('createFlattenedMcpTools', () => {
     })
 
     expect(tools).toEqual([])
+  })
+
+  // ROOT CAUSE:
+  //
+  // A web-search MCP call that hangs never emits a `tool-result` stream event.
+  // The chat turn pauses its mid-stream idle-abort while a tool runs
+  // (pendingToolCalls > 0 in chat.ts), so a stuck call was only recovered by
+  // the 180s turn watchdog and surfaced as 'stuck in phase "streaming"'.
+  //
+  // We fixed this by bounding each MCP call with callMcpToolWithTimeout: a
+  // hung call now resolves to an isError tool result, which flows back as a
+  // tool-result event, re-arms the idle timer, and ends the turn fast.
+  it('returns an isError result when a tool call exceeds the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const tools = await createFlattenedMcpTools({
+        listTools: async () => [TAVILY_SEARCH_DESCRIPTOR],
+        // Never resolves: simulates a hung web-search MCP server.
+        callTool: () => new Promise<never>(() => {}),
+      }, { callTimeoutMs: 1000 })
+
+      const pending = tools[0].execute!({ query: 'x' }, { toolCallId: 't1', messages: [] }) as Promise<{ isError?: boolean, content?: Array<{ text: string }> }>
+      await vi.advanceTimersByTimeAsync(1000)
+      const result = await pending
+
+      expect(result.isError).toBe(true)
+      expect(result.content![0].text).toContain('timed out after 1000ms')
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('callMcpToolWithTimeout', () => {
+  it('returns the tool result when the call resolves before the timeout', async () => {
+    const callTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] })
+    const result = await callMcpToolWithTimeout({ listTools: async () => [], callTool }, { name: 'srv::tool' }, 1000)
+
+    expect(result).toEqual({ content: [{ type: 'text', text: 'ok' }] })
+  })
+
+  it('resolves to an isError result when the call hangs past the timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const callTool = vi.fn(() => new Promise<never>(() => {}))
+      const pending = callMcpToolWithTimeout({ listTools: async () => [], callTool }, { name: 'srv::tool' }, 500)
+      await vi.advanceTimersByTimeAsync(500)
+      const result = await pending
+
+      expect(result.isError).toBe(true)
+      expect(result.content![0].text as string).toContain('srv::tool')
+    }
+    finally {
+      vi.useRealTimers()
+    }
   })
 })
