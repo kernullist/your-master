@@ -1,6 +1,7 @@
 import type { Project, WorkItem, WorkItemRunRecord } from '@proj-airi/stage-projects'
 
 import type { AgentRuntimeFetch } from './agent-runtime'
+import type { ReviewerAgentResult } from './review-loop'
 
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -11,7 +12,7 @@ import { defaultProjectAgentSettings } from '@proj-airi/stage-projects'
 import { describe, expect, it, vi } from 'vitest'
 
 import { removeAgentWorktree, runGit } from './git'
-import { createPreReviewGateDecision, runProjectWorkItem } from './orchestrator'
+import { combineAdversarialReview, createPreReviewGateDecision, parseAgentJsonObject, runExploreSubAgent, runProjectWorkItem } from './orchestrator'
 
 async function withGitProject<T>(fn: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'airi-project-orchestrator-'))
@@ -102,6 +103,163 @@ describe('project work item orchestrator', () => {
     expect(decision?.findings?.map(finding => finding.message)).toContain('Worker changed forbidden paths: secret/file.ts')
     expect(decision?.findings?.some(finding => finding.message.includes('Validation failed'))).toBe(true)
     expect(decision?.findings?.some(finding => finding.message.includes('Missing acceptance evidence'))).toBe(true)
+  })
+
+  it('blocks on structured validation exit codes even when the summary text looks clean', () => {
+    const workItem: WorkItem = {
+      id: 'work-2',
+      projectId: 'project-1',
+      identifier: 'AIRI-12',
+      title: 'Grounded validation',
+      goal: 'Change code and validate',
+      acceptanceCriteria: ['source changed'],
+      status: 'todo',
+      position: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+
+    const decision = createPreReviewGateDecision({
+      forbiddenPathPatterns: [],
+      workItem,
+      workerResult: {
+        changedFiles: ['src/app.ts'],
+        comment: 'done',
+        diffSummary: 'src/app.ts changed',
+        // No failing text summary, but the structured exit code is the trusted signal.
+        testSummary: '',
+        validationResults: [{ command: 'pnpm test', exitCode: 1, timedOut: false }],
+        acceptanceEvidence: [{ criterion: 'source changed', status: 'satisfied', evidence: 'src/app.ts edited.' }],
+      },
+    })
+
+    expect(decision?.passed).toBe(false)
+    expect(decision?.failureKind).toBe('validation_failed')
+    expect(decision?.findings?.some(finding => finding.message.includes('Validation failed'))).toBe(true)
+  })
+
+  it('trusts passing structured validation over a scary-looking summary text', () => {
+    const workItem: WorkItem = {
+      id: 'work-3',
+      projectId: 'project-1',
+      identifier: 'AIRI-13',
+      title: 'Grounded pass',
+      goal: 'Change code and validate',
+      acceptanceCriteria: ['source changed'],
+      status: 'todo',
+      position: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    }
+
+    const decision = createPreReviewGateDecision({
+      forbiddenPathPatterns: [],
+      workItem,
+      workerResult: {
+        changedFiles: ['src/app.ts'],
+        comment: 'done',
+        diffSummary: 'src/app.ts changed',
+        // The regex would flag this text, but the structured all-pass result wins.
+        testSummary: 'Command: pnpm test\nExit code: 1\nTimed out: false',
+        validationResults: [{ command: 'pnpm test', exitCode: 0, timedOut: false }],
+        acceptanceEvidence: [{ criterion: 'source changed', status: 'satisfied', evidence: 'src/app.ts edited.' }],
+      },
+    })
+
+    expect(decision).toBeUndefined()
+  })
+
+  it('parses a bare JSON object action', () => {
+    expect(parseAgentJsonObject('{"action":"read","path":"a.ts"}')).toEqual({ action: 'read', path: 'a.ts' })
+  })
+
+  it('parses a fenced JSON action wrapped in prose', () => {
+    const text = 'Here is my next action:\n```json\n{"action":"final","comment":"done"}\n```\nLet me know if that works.'
+    expect(parseAgentJsonObject(text)).toEqual({ action: 'final', comment: 'done' })
+  })
+
+  it('parses an uppercase fence and ignores trailing text', () => {
+    expect(parseAgentJsonObject('```JSON\n{"action":"status"}\n```\nthanks')).toEqual({ action: 'status' })
+  })
+
+  it('ignores braces that appear inside string values', () => {
+    const text = 'prefix {"action":"write","content":"if (x) { return {} }"} suffix'
+    expect(parseAgentJsonObject(text)).toEqual({ action: 'write', content: 'if (x) { return {} }' })
+  })
+
+  it('throws a clear error when no JSON object is present', () => {
+    expect(() => parseAgentJsonObject('no json here')).toThrow('must contain a JSON object')
+  })
+
+  it('runs a read-only explore sub-agent and returns its distilled summary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'airi-project-orchestrator-explore-'))
+    try {
+      await writeFile(join(root, 'target.ts'), 'export function foo() {\n  return 1\n}\n')
+      const project: Project = {
+        id: 'project-1',
+        name: 'demo',
+        issuePrefix: 'AIRI',
+        rootPath: root,
+        gitEnabled: false,
+        metadata: {},
+        createdAt: 1,
+        updatedAt: 1,
+      }
+      const responses = [
+        createAgentResponse(JSON.stringify({ action: 'search', query: 'foo' })),
+        createAgentResponse(JSON.stringify({ action: 'read', path: 'target.ts' })),
+        createAgentResponse(JSON.stringify({ action: 'final', summary: 'foo is defined in target.ts:1' })),
+      ]
+      const fetcher = vi.fn<AgentRuntimeFetch>(async () => responses.shift() ?? createAgentResponse('{"action":"final","summary":"done"}'))
+
+      const summary = await runExploreSubAgent({
+        objective: 'Where is foo defined?',
+        fetcher,
+        project,
+        projectRoot: root,
+        settings: defaultProjectAgentSettings,
+      })
+
+      expect(summary).toBe('foo is defined in target.ts:1')
+      // The sub-agent ran its own read-only loop (search, read, final) before answering.
+      expect(fetcher).toHaveBeenCalledTimes(3)
+    }
+    finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a passing review when the adversarial refuter also passes', () => {
+    const primary: ReviewerAgentResult = { passed: true, comment: 'Looks correct', confidence: 0.9 }
+    const refuter: ReviewerAgentResult = { passed: true, comment: 'Could not refute' }
+
+    expect(combineAdversarialReview(primary, refuter)).toBe(primary)
+  })
+
+  it('fails closed and merges findings when the adversarial refuter rejects', () => {
+    const primary: ReviewerAgentResult = {
+      passed: true,
+      comment: 'Looks correct',
+      requiredChanges: ['keep tests green'],
+      findings: [{ severity: 'nit', message: 'style' }],
+    }
+    const refuter: ReviewerAgentResult = {
+      passed: false,
+      comment: 'Criterion 2 is not actually met',
+      requiredChanges: ['handle the empty-input case', 'keep tests green'],
+      findings: [{ severity: 'blocker', message: 'empty input crashes' }],
+      failureKind: 'review_rejected',
+      confidence: 0.8,
+    }
+
+    const combined = combineAdversarialReview(primary, refuter)
+
+    expect(combined.passed).toBe(false)
+    expect(combined.failureKind).toBe('review_rejected')
+    expect(combined.comment).toContain('Criterion 2 is not actually met')
+    expect(combined.findings).toHaveLength(2)
+    // Required changes are merged and de-duplicated, first occurrence order preserved.
+    expect(combined.requiredChanges).toEqual(['keep tests green', 'handle the empty-input case'])
   })
 
   it('lets the worker use richer file and validation tools without git', async () => {

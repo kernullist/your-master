@@ -144,6 +144,8 @@ export interface ProjectPatchFile {
 const DEFAULT_OUTPUT_LIMIT = 1024 * 256
 const DEFAULT_SEARCH_LIMIT = 100
 const DEFAULT_SYMBOL_LIMIT = 120
+/** Longest match line returned before truncation, so minified/generated lines cannot flood the window. */
+const DEFAULT_SEARCH_LINE_LENGTH = 240
 const SKIPPED_SEARCH_DIRECTORIES = new Set(['.git', 'node_modules', 'dist', 'out', '.turbo'])
 
 type TypeScriptModule = typeof import('typescript')
@@ -266,6 +268,85 @@ export async function replaceInProjectFile(params: {
   }
 }
 
+/**
+ * Splits text into lines with their absolute start offsets.
+ *
+ * Use when:
+ * - A line-based match must map back to an exact character span in the original text
+ *
+ * Expects:
+ * - `text` uses `\n` as the record separator; a trailing `\n` yields a final empty line
+ *
+ * Returns:
+ * - One entry per line, each with its start offset and content excluding the newline
+ */
+function splitLinesWithOffsets(text: string): Array<{ start: number, text: string }> {
+  const lines: Array<{ start: number, text: string }> = []
+  let start = 0
+  for (let i = 0; i <= text.length; i += 1) {
+    if (i === text.length || text[i] === '\n') {
+      lines.push({ start, text: text.slice(start, i) })
+      start = i + 1
+    }
+  }
+  return lines
+}
+
+/**
+ * Normalizes a line for whitespace-insensitive comparison.
+ *
+ * Before:
+ * - "  return value  \r"
+ *
+ * After:
+ * - "  return value"
+ */
+function normalizeLineEnd(line: string): string {
+  // Strip a trailing carriage return, spaces, tabs, BOM, and non-breaking space so CRLF and
+  // re-indentation drift do not block an otherwise-correct match. Leading indentation is kept.
+  return line.replace(/\s+$/, '')
+}
+
+/**
+ * Finds character spans that match `search` line by line, ignoring trailing whitespace and CRLF.
+ *
+ * Use when:
+ * - An exact match failed and the model likely drifted on trailing whitespace or line endings
+ *
+ * Expects:
+ * - `search` is compared as whole lines; a partial-line search will not match (fails safe)
+ *
+ * Returns:
+ * - Original-text `{ start, end }` spans (end exclusive); empty when nothing matches
+ */
+function findLineTrimmedMatches(text: string, search: string): Array<{ start: number, end: number }> {
+  const searchKeys = search.replace(/\r\n/g, '\n').split('\n').map(normalizeLineEnd)
+  const windowSize = searchKeys.length
+  if (windowSize === 0)
+    return []
+
+  const lines = splitLinesWithOffsets(text)
+  const matches: Array<{ start: number, end: number }> = []
+  for (let i = 0; i + windowSize <= lines.length; i += 1) {
+    let matched = true
+    for (let j = 0; j < windowSize; j += 1) {
+      if (normalizeLineEnd(lines[i + j].text) !== searchKeys[j]) {
+        matched = false
+        break
+      }
+    }
+    if (!matched)
+      continue
+
+    const lastLine = lines[i + windowSize - 1]
+    matches.push({
+      start: lines[i].start,
+      end: lastLine.start + lastLine.text.length,
+    })
+  }
+  return matches
+}
+
 function applyExactTextEdits(text: string, relativePath: string, edits: ProjectPatchEdit[]): { replacements: number, text: string } {
   let next = text
   let replacements = 0
@@ -275,15 +356,33 @@ function applyExactTextEdits(text: string, relativePath: string, edits: ProjectP
       throw new Error(`Patch search text must not be empty in ${relativePath}`)
 
     const occurrences = next.split(edit.search).length - 1
-    if (occurrences === 0)
-      throw new Error(`Patch search text was not found in ${relativePath}`)
-    if (occurrences > 1 && !edit.replaceAll)
-      throw new Error(`Patch search text matched ${occurrences} times in ${relativePath}`)
+    if (occurrences > 0) {
+      if (occurrences > 1 && !edit.replaceAll)
+        throw new Error(`Patch search text matched ${occurrences} times in ${relativePath}`)
 
-    next = edit.replaceAll
-      ? next.split(edit.search).join(edit.replace)
-      : next.replace(edit.search, edit.replace)
-    replacements += edit.replaceAll ? occurrences : 1
+      next = edit.replaceAll
+        ? next.split(edit.search).join(edit.replace)
+        : next.replace(edit.search, edit.replace)
+      replacements += edit.replaceAll ? occurrences : 1
+      continue
+    }
+
+    // NOTICE:
+    // Exact match failed, so fall back to a line-trimmed match that ignores trailing whitespace
+    // and CRLF, because models routinely drift on those. Uniqueness is still enforced so an
+    // ambiguous fuzzy match fails loudly instead of silently editing the wrong location.
+    const fuzzyMatches = findLineTrimmedMatches(next, edit.search)
+    if (fuzzyMatches.length === 0)
+      throw new Error(`Patch search text was not found in ${relativePath}`)
+    if (fuzzyMatches.length > 1 && !edit.replaceAll)
+      throw new Error(`Patch search text matched ${fuzzyMatches.length} times (whitespace-insensitive) in ${relativePath}`)
+
+    const targets = edit.replaceAll ? fuzzyMatches : [fuzzyMatches[0]]
+    // Apply from last to first so earlier spans keep their original offsets after each splice.
+    for (let m = targets.length - 1; m >= 0; m -= 1) {
+      next = next.slice(0, targets[m].start) + edit.replace + next.slice(targets[m].end)
+    }
+    replacements += targets.length
   }
 
   return {
@@ -990,17 +1089,74 @@ export async function findProjectFiles(params: {
     .map(path => ({ path }))
 }
 
+/** Truncates an over-long match line so a single minified/generated line cannot flood the context window. */
+function trimSearchLine(line: string): string {
+  if (line.length <= DEFAULT_SEARCH_LINE_LENGTH)
+    return line
+  return `${line.slice(0, DEFAULT_SEARCH_LINE_LENGTH)} ...[+${line.length - DEFAULT_SEARCH_LINE_LENGTH} chars]`
+}
+
 /**
- * Searches text files under a project path.
+ * Builds a per-line matcher for literal or regular-expression search.
  *
  * Use when:
- * - Worker agent needs grep-like context without unrestricted shell access
+ * - searchProjectFiles needs to test each line against a query
+ *
+ * Expects:
+ * - `useRegex` compiles `query` as a RegExp; an invalid pattern safely falls back to literal search
+ *
+ * Returns:
+ * - A predicate that reports whether a line matches
+ */
+function createLineMatcher(query: string, useRegex: boolean): (line: string) => boolean {
+  if (!useRegex)
+    return line => line.includes(query)
+
+  try {
+    const pattern = new RegExp(query)
+    return line => pattern.test(line)
+  }
+  catch {
+    // NOTICE: an invalid regex from a model falls back to literal substring search
+    // instead of failing the whole tool call, so one bad pattern never aborts a step.
+    return line => line.includes(query)
+  }
+}
+
+/** Reports whether a line declares `query`, used to rank definitions above references. */
+function isDefinitionLine(line: string, query: string): boolean {
+  const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`\\b(?:function|class|interface|type|enum|const|let|var)\\s+${escaped}\\b`).test(line)
+}
+
+/**
+ * Scores a search match so declarations rank above references and generated/test files rank below source.
+ *
+ * Higher is better. Used only to order results; the returned match shape is unchanged.
+ */
+function scoreSearchMatch(match: ProjectSearchMatch, query: string, useRegex: boolean): number {
+  let score = 0
+  if (!useRegex && isDefinitionLine(match.text, query))
+    score += 100
+  if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(match.path))
+    score -= 50
+  if (/(?:^|\/)(?:dist|out|build)\//.test(match.path) || match.path.includes('.min.'))
+    score -= 40
+  return score
+}
+
+/**
+ * Searches text files under a project path with optional regex, definition-first ranking, and trimming.
+ *
+ * Use when:
+ * - Worker or reviewer agent needs grep-like context without unrestricted shell access
  *
  * Expects:
  * - Binary files may be skipped when UTF-8 reading fails
+ * - `regex` compiles the query as a RegExp; an invalid pattern falls back to literal substring search
  *
  * Returns:
- * - Matching lines up to the provided limit
+ * - Matching lines ranked (declarations first, generated/test files last), long lines truncated, capped to the limit
  */
 export async function searchProjectFiles(params: {
   projectRoot: string
@@ -1009,10 +1165,14 @@ export async function searchProjectFiles(params: {
   forbiddenPathPatterns?: string[]
   maxMatches?: number
   maxFiles?: number
+  regex?: boolean
 }): Promise<ProjectSearchMatch[]> {
   const files: string[] = []
-  const matches: ProjectSearchMatch[] = []
+  const collected: ProjectSearchMatch[] = []
   const maxMatches = params.maxMatches ?? DEFAULT_SEARCH_LIMIT
+  // Collect more than the cap so ranking can promote the best matches before slicing.
+  const collectCap = Math.max(maxMatches * 4, 200)
+  const matchesLine = createLineMatcher(params.query, params.regex === true)
   await collectSearchFiles({
     projectRoot: params.projectRoot,
     relativePath: params.relativePath ?? '.',
@@ -1022,7 +1182,7 @@ export async function searchProjectFiles(params: {
   })
 
   for (const file of files) {
-    if (matches.length >= maxMatches)
+    if (collected.length >= collectCap)
       break
 
     let text = ''
@@ -1039,19 +1199,24 @@ export async function searchProjectFiles(params: {
 
     const lines = text.split(/\r?\n/)
     for (const [index, line] of lines.entries()) {
-      if (!line.includes(params.query))
+      if (!matchesLine(line))
         continue
-      matches.push({
+      collected.push({
         path: file,
         line: index + 1,
-        text: line,
+        text: trimSearchLine(line),
       })
-      if (matches.length >= maxMatches)
+      if (collected.length >= collectCap)
         break
     }
   }
 
-  return matches
+  // Definition-first, source-before-test ranking; ties keep discovery order via the index tiebreak.
+  return collected
+    .map((match, index) => ({ match, index, score: scoreSearchMatch(match, params.query, params.regex === true) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, maxMatches)
+    .map(entry => entry.match)
 }
 
 function truncateOutput(output: string, limit: number): string {

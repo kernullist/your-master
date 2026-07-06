@@ -110,6 +110,43 @@ describe('project review loop', () => {
     expect(statuses.at(-1)).toBe('blocked')
   })
 
+  it('stops early when the same failure and diff repeat across attempts', async () => {
+    const reverted = vi.fn(async () => {})
+    const statuses: WorkItem['status'][] = []
+    // The worker keeps producing the identical diff and the reviewer keeps rejecting the same way.
+    const runWorker = vi.fn(async () => ({
+      changedFiles: ['file.ts'],
+      diffSummary: 'same diff',
+      comment: 'worker',
+    }))
+    const runReviewer = vi.fn(async () => ({
+      passed: false,
+      comment: 'Still failing',
+      failureKind: 'review_rejected' as const,
+    }))
+
+    const result = await runProjectReviewLoop({
+      project,
+      workItem,
+      settings: { maxReviewRetries: 5 },
+      runWorker,
+      runReviewer,
+      updateStatus: async (status) => {
+        statuses.push(status)
+      },
+      addComment: async () => {},
+      revertChanges: reverted,
+    })
+
+    expect(result.passed).toBe(false)
+    // Attempt 0 records the signature, attempt 1 matches it and breaks: 2 runs instead of 5.
+    expect(runWorker).toHaveBeenCalledTimes(2)
+    expect(runReviewer).toHaveBeenCalledTimes(2)
+    expect(result.attempts).toBe(2)
+    expect(reverted).toHaveBeenCalledWith(['file.ts'])
+    expect(statuses.at(-1)).toBe('blocked')
+  })
+
   it('passes structured reviewer feedback back to the worker', async () => {
     const runWorker = vi.fn(async input => ({
       changedFiles: [`file-${input.attempt}.ts`],

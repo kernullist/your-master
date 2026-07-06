@@ -1,6 +1,7 @@
 import type { Project, ProjectAgentSettings, WorkItem } from '@proj-airi/stage-projects'
 
 import type { ProjectRunnerFailureKind } from './failure'
+import type { ProjectValidationCommandResult } from './tests'
 
 import { classifyProjectRunnerFailure } from './failure'
 
@@ -57,6 +58,13 @@ export interface WorkerAgentResult {
   comment: string
   /** Optional test result summary. */
   testSummary?: string
+  /**
+   * Structured results of the harness-executed final validation.
+   *
+   * These carry the real exit codes so the pre-review gate and reviewer can trust execution
+   * results instead of re-parsing {@link WorkerAgentResult.testSummary} text.
+   */
+  validationResults?: ProjectValidationCommandResult[]
   /** Worker-reported subtask execution progress. */
   subtaskProgress?: ProjectSubtaskProgress[]
   /** Optional reason when the worker cannot continue without user/project input. */
@@ -223,9 +231,14 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
   let previousDiffSummary: string | undefined
   let previousFailureKind: ProjectRunnerFailureKind | undefined
   let latestSubtaskProgress: ProjectSubtaskProgress[] | undefined
+  // Convergence detection: identical (failureKind, diff) across consecutive attempts means no progress.
+  let previousStallSignature: string | undefined
+  let completedAttempts = 0
+  let stalled = false
 
   for (let attempt = 0; attempt < options.settings.maxReviewRetries; attempt += 1) {
     const attemptLabel = `${attempt + 1}/${options.settings.maxReviewRetries}`
+    completedAttempts = attempt + 1
     await options.updateStatus('in_progress')
     await options.addComment(
       'worker',
@@ -310,10 +323,25 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
         reviewerComment: review.comment,
       }
     }
+
+    // Stop early when a repair round reproduces the same failure with the same diff: repeated
+    // self-correction plateaus, so spending the remaining retries only burns tokens.
+    const stallSignature = `${review.failureKind ?? 'review_rejected'}::${workerResult.diffSummary}`
+    if (stallSignature === previousStallSignature) {
+      stalled = true
+      break
+    }
+    previousStallSignature = stallSignature
   }
 
   await options.revertChanges([...changedFiles])
-  await options.addComment('system', 'status', 'Review failed after maximum retries. Agent changes were reverted.')
+  await options.addComment(
+    'system',
+    'status',
+    stalled
+      ? `연속된 시도에서 동일한 실패와 동일한 diff가 반복돼서 더 진행하지 않고 변경을 되돌렸어. (시도 ${completedAttempts}/${options.settings.maxReviewRetries})`
+      : 'Review failed after maximum retries. Agent changes were reverted.',
+  )
   await options.updateStatus('blocked')
   const classification = classifyProjectRunnerFailure({
     changedFiles: [...changedFiles],
@@ -322,7 +350,7 @@ export async function runProjectReviewLoop(options: ProjectReviewLoopOptions): P
   })
   return {
     passed: false,
-    attempts: options.settings.maxReviewRetries,
+    attempts: completedAttempts,
     changedFiles: [...changedFiles],
     subtaskProgress: latestSubtaskProgress,
     reviewerComment: previousReviewerComment,

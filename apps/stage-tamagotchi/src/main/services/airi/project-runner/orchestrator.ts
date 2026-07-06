@@ -22,6 +22,7 @@ import {
   removeAgentWorktree,
   revertAgentChangedFiles,
 } from './git'
+import { compactAgentMessages } from './message-compaction'
 import { runProjectReviewLoop } from './review-loop'
 import { normalizeSuggestedTestCommands, runProjectTestCommand } from './tests'
 import {
@@ -39,7 +40,7 @@ import {
 type WorkerAction
   = | { action: 'list', path?: string }
     | { action: 'read', path: string }
-    | { action: 'search', query: string, path?: string }
+    | { action: 'search', query: string, path?: string, regex?: boolean }
     | { action: 'find', query: string, path?: string }
     | { action: 'index', path?: string }
     | { action: 'replace', path: string, search: string, replace: string, replaceAll?: boolean }
@@ -49,6 +50,7 @@ type WorkerAction
     | { action: 'status' }
     | { action: 'diff' }
     | { action: 'test', commands?: string[] }
+    | { action: 'explore', objective: string }
     | { action: 'subtask', evidence?: string, status: ProjectSubtaskProgress['status'], title: string }
     | { action: 'blocked', comment: string, failureKind?: WorkerAgentResult['failureKind'], questions?: string[], subtaskProgress?: ProjectSubtaskProgress[] }
     | { action: 'final', acceptanceEvidence: AcceptanceCriterionEvidence[], comment: string, subtaskProgress?: ProjectSubtaskProgress[] }
@@ -56,7 +58,7 @@ type WorkerAction
 type ReviewerAction
   = | { action: 'list', path?: string }
     | { action: 'read', path: string }
-    | { action: 'search', query: string, path?: string }
+    | { action: 'search', query: string, path?: string, regex?: boolean }
     | { action: 'find', query: string, path?: string }
     | { action: 'index', path?: string }
     | { action: 'status' }
@@ -121,22 +123,65 @@ interface ProjectRunnerStore {
 }
 
 /**
- * Extracts a JSON object from a model response.
+ * Finds the first balanced JSON object substring, ignoring braces inside string literals.
+ *
+ * Before:
+ * - "Here is the action:\n```json\n{\"action\":\"final\"}\n```\nLet me know."
+ *
+ * After:
+ * - "{\"action\":\"final\"}"
+ */
+function findBalancedJsonObject(text: string): string | undefined {
+  const start = text.indexOf('{')
+  if (start < 0)
+    return undefined
+
+  let depth = 0
+  let inString = false
+  let escaped = false
+  // Scan from the first brace, tracking string context so braces inside string values are ignored.
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i]
+    if (inString) {
+      if (escaped)
+        escaped = false
+      else if (char === '\\')
+        escaped = true
+      else if (char === '"')
+        inString = false
+      continue
+    }
+    if (char === '"') {
+      inString = true
+      continue
+    }
+    if (char === '{') {
+      depth += 1
+    }
+    else if (char === '}') {
+      depth -= 1
+      if (depth === 0)
+        return text.slice(start, i + 1)
+    }
+  }
+  return undefined
+}
+
+/**
+ * Extracts a JSON object from a model response, tolerating code fences and surrounding prose.
  *
  * Before:
  * - "```json\n{\"action\":\"final\",\"comment\":\"done\"}\n```"
+ * - "Sure, here is my action: {\"action\":\"read\",\"path\":\"a.ts\"} — let me know."
  *
  * After:
  * - `{ action: "final", comment: "done" }`
  */
 export function parseAgentJsonObject(text: string): Record<string, unknown> {
-  const trimmed = text.trim()
-  const source = trimmed.startsWith('```')
-    ? trimmed
-        .replace(/^```(?:json)?/i, '')
-        .replace(/```$/, '')
-        .trim()
-    : trimmed
+  const source = findBalancedJsonObject(text)
+  if (source === undefined)
+    throw new Error('Agent response must contain a JSON object.')
+
   const parsed = JSON.parse(source) as unknown
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
     throw new Error('Agent response must be a JSON object.')
@@ -250,6 +295,7 @@ function parseWorkerAction(text: string): WorkerAction {
         action,
         query: asString(parsed.query, 'query'),
         path: typeof parsed.path === 'string' ? parsed.path : undefined,
+        regex: parsed.regex === true,
       }
     case 'find':
       return {
@@ -289,6 +335,8 @@ function parseWorkerAction(text: string): WorkerAction {
         action,
         commands: asStringArray(parsed.commands),
       }
+    case 'explore':
+      return { action, objective: asString(parsed.objective, 'objective') }
     case 'subtask':
       return {
         action,
@@ -394,6 +442,7 @@ function parseReviewerAction(text: string): ReviewerAction {
         action,
         query: asString(parsed.query, 'query'),
         path: typeof parsed.path === 'string' ? parsed.path : undefined,
+        regex: parsed.regex === true,
       }
     case 'find':
       return {
@@ -560,6 +609,27 @@ function isFailingValidationSummary(summary: string | undefined): boolean {
 }
 
 /**
+ * Reports whether the worker's final validation actually failed.
+ *
+ * Use when:
+ * - The pre-review gate must decide validation status before spending reviewer tokens
+ *
+ * Expects:
+ * - `validationResults` are the harness-executed final commands when present
+ *
+ * Returns:
+ * - True when any executed command exited non-zero or timed out; falls back to parsing the
+ *   text summary only when no structured results exist (for example a blocked run)
+ */
+function hasFailingValidation(workerResult: WorkerAgentResult): boolean {
+  const results = workerResult.validationResults
+  if (results && results.length > 0)
+    return results.some(result => result.exitCode !== 0 || result.timedOut)
+
+  return isFailingValidationSummary(workerResult.testSummary)
+}
+
+/**
  * Converts a failed runner tool call into model-visible feedback.
  *
  * Use when:
@@ -626,7 +696,7 @@ export function createPreReviewGateDecision(params: {
     requiredChanges.push(`Remove or avoid forbidden path changes: ${forbiddenFiles.join(', ')}`)
   }
 
-  if (isFailingValidationSummary(params.workerResult.testSummary)) {
+  if (hasFailingValidation(params.workerResult)) {
     failureKind ??= 'validation_failed'
     findings.push({
       severity: 'blocker',
@@ -674,6 +744,164 @@ export function createPreReviewGateDecision(params: {
   }
 }
 
+type ExploreAction
+  = | { action: 'list', path?: string }
+    | { action: 'read', path: string }
+    | { action: 'search', query: string, path?: string, regex?: boolean }
+    | { action: 'find', query: string, path?: string }
+    | { action: 'index', path?: string }
+    | { action: 'final', summary: string }
+
+function parseExploreAction(text: string): ExploreAction {
+  const parsed = parseAgentJsonObject(text)
+  const action = asString(parsed.action, 'action')
+  switch (action) {
+    case 'list':
+      return { action, path: typeof parsed.path === 'string' ? parsed.path : undefined }
+    case 'read':
+      return { action, path: asString(parsed.path, 'path') }
+    case 'search':
+      return {
+        action,
+        query: asString(parsed.query, 'query'),
+        path: typeof parsed.path === 'string' ? parsed.path : undefined,
+        regex: parsed.regex === true,
+      }
+    case 'find':
+      return {
+        action,
+        query: asString(parsed.query, 'query'),
+        path: typeof parsed.path === 'string' ? parsed.path : undefined,
+      }
+    case 'index':
+      return { action, path: typeof parsed.path === 'string' ? parsed.path : undefined }
+    case 'final':
+      return { action, summary: asString(parsed.summary, 'summary') }
+    default:
+      throw new Error(`Unsupported explore action: ${action}`)
+  }
+}
+
+async function executeExploreAction(params: {
+  action: Exclude<ExploreAction, { action: 'final' }>
+  projectRoot: string
+  settings: ProjectAgentSettings
+}): Promise<unknown> {
+  switch (params.action.action) {
+    case 'list':
+      return await listProjectDirectory({
+        projectRoot: params.projectRoot,
+        relativePath: params.action.path ?? '.',
+        forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+      })
+    case 'read':
+      return await readProjectFile({
+        projectRoot: params.projectRoot,
+        relativePath: params.action.path,
+        forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+      })
+    case 'search':
+      return await searchProjectFiles({
+        projectRoot: params.projectRoot,
+        query: params.action.query,
+        relativePath: params.action.path,
+        forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+        regex: params.action.regex,
+      })
+    case 'find':
+      return await findProjectFiles({
+        projectRoot: params.projectRoot,
+        query: params.action.query,
+        relativePath: params.action.path,
+        forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+      })
+    case 'index':
+      return await indexProjectSymbols({
+        projectRoot: params.projectRoot,
+        relativePath: params.action.path,
+        forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+      })
+  }
+}
+
+function createExploreSystemPrompt(): string {
+  return [
+    'You are AIRI Explorer, a READ-ONLY code exploration sub-agent controlled through JSON actions.',
+    'You cannot edit files or run shell commands. Investigate, then return one concise distilled summary.',
+    'Return exactly one JSON object and no prose.',
+    'Available actions:',
+    '{"action":"list","path":"."}',
+    '{"action":"read","path":"relative/file.ts"}',
+    '{"action":"search","query":"text or regex","path":"optional/path","regex":false}',
+    '{"action":"find","query":"filename-or-path-fragment","path":"optional/path"}',
+    '{"action":"index","path":"optional/path"}',
+    '{"action":"final","summary":"distilled findings with concrete file:line references"}',
+    'Finish with final as soon as you can answer the objective. Keep the summary short and high-signal.',
+  ].join('\n')
+}
+
+/**
+ * Runs a bounded read-only exploration sub-agent over a clean context and returns distilled findings.
+ *
+ * Use when:
+ * - The worker needs to investigate the codebase without polluting its own context with search churn
+ *
+ * Expects:
+ * - `objective` is a focused, self-contained question
+ * - The sub-agent only reads; it never edits files or runs shell commands
+ *
+ * Returns:
+ * - The sub-agent's distilled summary string
+ *
+ * Call stack:
+ *
+ * runWorkerWithTools
+ *   -> {@link runExploreSubAgent}
+ *     -> {@link callAgentText}
+ *     -> {@link executeExploreAction}
+ */
+export async function runExploreSubAgent(params: {
+  objective: string
+  fetcher?: AgentRuntimeFetch
+  project: Project
+  projectRoot: string
+  settings: ProjectAgentSettings
+}): Promise<string> {
+  const messages: AgentChatMessage[] = [
+    { role: 'system', content: createExploreSystemPrompt() },
+    {
+      role: 'user',
+      content: `Project: ${params.project.name}\nExploration objective:\n${params.objective}\n\nReturn a distilled summary with concrete file:line references. Do not edit anything.`,
+    },
+  ]
+
+  for (let step = 0; step < 12; step += 1) {
+    const response = await callAgentText({
+      config: params.settings.worker,
+      messages: compactAgentMessages(messages),
+      fetcher: params.fetcher,
+      projectRoot: params.projectRoot,
+    })
+    const action = parseExploreAction(response)
+    messages.push({ role: 'assistant', content: response })
+
+    if (action.action === 'final')
+      return action.summary
+
+    const toolResult = await runToolActionSafely(async () => await executeExploreAction({
+      action,
+      projectRoot: params.projectRoot,
+      settings: params.settings,
+    }))
+    messages.push({
+      role: 'user',
+      content: `Tool result:\n${truncateToolResult(toolResult)}`,
+    })
+  }
+
+  throw new Error('Explore sub-agent did not finish within 12 tool steps.')
+}
+
 function createWorkerSystemPrompt(): string {
   return [
     'You are AIRI Worker, a coding agent controlled through JSON actions.',
@@ -682,7 +910,7 @@ function createWorkerSystemPrompt(): string {
     'Available actions:',
     '{"action":"list","path":"."}',
     '{"action":"read","path":"relative/file.ts"}',
-    '{"action":"search","query":"text","path":"optional/path"}',
+    '{"action":"search","query":"text or regex","path":"optional/path","regex":false}',
     '{"action":"find","query":"filename-or-path-fragment","path":"optional/path"}',
     '{"action":"index","path":"optional/path"}',
     '{"action":"replace","path":"relative/file.ts","search":"exact text","replace":"new text","replaceAll":false}',
@@ -692,10 +920,12 @@ function createWorkerSystemPrompt(): string {
     '{"action":"status"}',
     '{"action":"diff"}',
     '{"action":"test","commands":["optional validation command"]}',
+    '{"action":"explore","objective":"a focused read-only question to investigate in a clean sub-agent context"}',
     '{"action":"subtask","title":"exact subtask title","status":"todo|in_progress|done|blocked","evidence":"file/test/diff/blocker evidence"}',
     '{"action":"blocked","comment":"clear reason for the user","failureKind":"worker_blocked|validation_failed|forbidden_path|no_changes","questions":["specific question"],"subtaskProgress":[{"title":"subtask","status":"blocked","evidence":"why"}]}',
     '{"action":"final","comment":"short summary of completed work","subtaskProgress":[{"title":"subtask","status":"done","evidence":"file/test/diff evidence"}],"acceptanceEvidence":[{"criterion":"exact acceptance criterion","status":"satisfied|missing|not_applicable","evidence":"file/test/diff evidence"}]}',
     'Use read/search/find/index before replace, patch, or write. Use diff/status/test before final when useful.',
+    'Use explore to delegate heavy read-only investigation to a sub-agent that returns a distilled summary, keeping your own context focused.',
     'Configured verifier commands are deterministic checks; use them as the default validation contract when they appear in the task message.',
     'Use subtask to report progress for each Project Manager subtask before and after meaningful edits.',
     'Use blocked when requirements are missing, a policy prevents a required edit, or continuing would risk user work.',
@@ -774,7 +1004,8 @@ async function runWorkerWithTools(params: {
   for (let step = 0; step < 30; step += 1) {
     const response = await callAgentText({
       config: params.settings.worker,
-      messages,
+      // Clear stale tool outputs before each step so a long loop does not rot its own context.
+      messages: compactAgentMessages(messages),
       fetcher: params.fetcher,
       projectRoot: params.projectRoot,
     })
@@ -834,6 +1065,8 @@ async function runWorkerWithTools(params: {
         comment: action.comment,
         diffSummary,
         subtaskProgress: mergedSubtaskProgress,
+        // Structured exit codes from the harness-executed final validation, trusted by the gate/reviewer.
+        validationResults: testResult.commands,
         testSummary: [
           lastTestSummary ? `Worker-requested validation:\n${lastTestSummary}` : '',
           `Final validation:\n${testResult.summary}`,
@@ -855,6 +1088,22 @@ async function runWorkerWithTools(params: {
             progress: subtaskProgress,
           }),
         })}`,
+      })
+      continue
+    }
+
+    if (action.action === 'explore') {
+      // Offload read-only investigation to a sub-agent so search churn never enters the worker context.
+      const summary = await runToolActionSafely(async () => await runExploreSubAgent({
+        objective: action.objective,
+        fetcher: params.fetcher,
+        project: params.project,
+        projectRoot: params.projectRoot,
+        settings: params.settings,
+      }))
+      messages.push({
+        role: 'user',
+        content: `Explore result:\n${truncateToolResult(summary)}`,
       })
       continue
     }
@@ -892,7 +1141,7 @@ async function syncGitChangedFiles(params: {
 }
 
 async function executeWorkerAction(params: {
-  action: Exclude<WorkerAction, { action: 'blocked' } | { action: 'final' } | { action: 'subtask' }>
+  action: Exclude<WorkerAction, { action: 'blocked' } | { action: 'final' } | { action: 'subtask' } | { action: 'explore' }>
   changedFiles: Set<string>
   managerBrief?: ProjectManagerBrief
   project: Project
@@ -918,6 +1167,7 @@ async function executeWorkerAction(params: {
         query: params.action.query,
         relativePath: params.action.path,
         forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+        regex: params.action.regex,
       })
     case 'find':
       return await findProjectFiles({
@@ -1041,6 +1291,7 @@ async function executeReviewerAction(params: {
         query: params.action.query,
         relativePath: params.action.path,
         forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
+        regex: params.action.regex,
       })
     case 'find':
       return await findProjectFiles({
@@ -1086,17 +1337,21 @@ async function executeReviewerAction(params: {
   }
 }
 
-function createReviewerSystemPrompt(): string {
+function createReviewerSystemPrompt(lens: 'default' | 'refute' = 'default'): string {
   return [
     'You are AIRI Reviewer, a strict code reviewer controlled through JSON actions.',
     'Do not pass unless every acceptance criterion is satisfied or clearly not applicable with evidence.',
+    ...(lens === 'refute'
+      ? ['Adversarial pass: assume the change is WRONG. Actively hunt for an acceptance criterion it fails or a regression it introduces, and only pass if after a genuine attempt to refute you cannot find any blocking issue.']
+      : []),
     'Use the reviewer evidence pack first: changed files, worker evidence, source symbols/imports, diff summary, and validation summary are pre-collected for you.',
+    'Trust the "Executed validation (trusted exit codes)" section as ground truth; treat worker acceptance claims and worker comments as unverified and re-derive each acceptance criterion from the diff and the executed exit codes.',
     'Treat configured verifier command failures as blockers unless the work item explicitly makes them irrelevant.',
     'Use tools to inspect actual files, symbols, diffs, status, and validation results before final when evidence is thin.',
     'Available actions:',
     '{"action":"list","path":"."}',
     '{"action":"read","path":"relative/file.ts"}',
-    '{"action":"search","query":"text","path":"optional/path"}',
+    '{"action":"search","query":"text or regex","path":"optional/path","regex":false}',
     '{"action":"find","query":"filename-or-path-fragment","path":"optional/path"}',
     '{"action":"index","path":"optional/path"}',
     '{"action":"status"}',
@@ -1116,6 +1371,7 @@ async function runReviewerAgent(params: {
   settings: ProjectAgentSettings
   workItem: WorkItem
   workerResult: WorkerAgentResult
+  lens?: 'default' | 'refute'
 }): Promise<ReviewerAgentResult> {
   const evidencePack = await buildProjectReviewerEvidencePack({
     forbiddenPathPatterns: params.settings.forbiddenPathPatterns,
@@ -1124,7 +1380,7 @@ async function runReviewerAgent(params: {
   })
   const messages: AgentChatMessage[] = [{
     role: 'system',
-    content: createReviewerSystemPrompt(),
+    content: createReviewerSystemPrompt(params.lens),
   }, {
     role: 'user',
     content: [
@@ -1147,7 +1403,8 @@ async function runReviewerAgent(params: {
   for (let step = 0; step < 20; step += 1) {
     const response = await callAgentText({
       config: params.settings.reviewer,
-      messages,
+      // Clear stale tool outputs before each step so a long loop does not rot its own context.
+      messages: compactAgentMessages(messages),
       fetcher: params.fetcher,
       projectRoot: params.projectRoot,
     })
@@ -1172,6 +1429,36 @@ async function runReviewerAgent(params: {
   }
 
   throw new Error('Reviewer agent did not finish within 20 tool steps.')
+}
+
+/**
+ * Combines a passing primary review with an adversarial refutation pass, failing closed on disagreement.
+ *
+ * Use when:
+ * - Adversarial review is enabled and the primary reviewer already passed
+ *
+ * Expects:
+ * - `primary.passed` is true; `refuter` is a second review of the same change run with the refutation lens
+ *
+ * Returns:
+ * - `primary` unchanged when the refuter also passes; otherwise a merged rejection carrying both
+ *   reviewers' findings and required changes so the next worker attempt sees every blocker
+ */
+export function combineAdversarialReview(primary: ReviewerAgentResult, refuter: ReviewerAgentResult): ReviewerAgentResult {
+  if (refuter.passed)
+    return primary
+
+  const dedupe = (values: string[]): string[] => [...new Set(values.filter(Boolean))]
+  return {
+    passed: false,
+    comment: `Adversarial review rejected an otherwise-passing change.\nPrimary: ${primary.comment}\nRefutation: ${refuter.comment}`,
+    findings: [...(primary.findings ?? []), ...(refuter.findings ?? [])],
+    requiredChanges: dedupe([...(primary.requiredChanges ?? []), ...(refuter.requiredChanges ?? [])]),
+    suggestedTests: dedupe([...(primary.suggestedTests ?? []), ...(refuter.suggestedTests ?? [])]),
+    acceptanceEvidence: refuter.acceptanceEvidence ?? primary.acceptanceEvidence,
+    confidence: refuter.confidence,
+    failureKind: refuter.failureKind ?? 'review_rejected',
+  }
 }
 
 /**
@@ -1451,7 +1738,7 @@ export async function runProjectWorkItem(params: {
         if (gateDecision)
           return gateDecision
 
-        return await runReviewerAgent({
+        const primary = await runReviewerAgent({
           contextPack,
           fetcher: params.fetcher,
           project: params.project,
@@ -1460,7 +1747,24 @@ export async function runProjectWorkItem(params: {
           workItem: params.workItem,
           managerBrief,
           workerResult: input.workerResult,
+          lens: 'default',
         })
+        // Adversarial second pass (opt-in): only re-check a PASS, and require both reviewers to agree.
+        if (!primary.passed || !params.settings.adversarialReview)
+          return primary
+
+        const refuter = await runReviewerAgent({
+          contextPack,
+          fetcher: params.fetcher,
+          project: params.project,
+          projectRoot: activeProjectRoot,
+          settings: params.settings,
+          workItem: params.workItem,
+          managerBrief,
+          workerResult: input.workerResult,
+          lens: 'refute',
+        })
+        return combineAdversarialReview(primary, refuter)
       },
       failureMemory: contextPack?.failureMemory,
       updateStatus: async (status) => {
