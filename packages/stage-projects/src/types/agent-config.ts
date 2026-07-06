@@ -14,6 +14,20 @@ export interface AgentModelConfig {
   apiKey?: string
   /** Role-specific system prompt. */
   systemPrompt: string
+  /**
+   * Optional cap on generated tokens per request (`max_tokens`).
+   *
+   * Left unset means the provider default is used, so whole-file writes are never truncated.
+   * Set it to bound cost/latency on paid providers such as OpenRouter.
+   */
+  maxOutputTokens?: number
+  /**
+   * When true, request JSON-object mode (`response_format: { type: 'json_object' }`) so the provider
+   * guarantees syntactically valid JSON. Enable only for providers/models that support it.
+   *
+   * @default false
+   */
+  structuredOutput?: boolean
 }
 
 /**
@@ -42,6 +56,13 @@ export interface ProjectAgentSettings {
   forbiddenPathPatterns: string[]
   /** Agent timeout in milliseconds. */
   timeoutMs: number
+  /**
+   * When true, a passing review is re-checked by a second reviewer with a refutation lens and both
+   * must agree, trading roughly double reviewer cost for fewer confidently-wrong approvals.
+   *
+   * @default false
+   */
+  adversarialReview?: boolean
 }
 
 /**
@@ -71,4 +92,5 @@ export const defaultProjectAgentSettings: ProjectAgentSettings = {
   shellAllowlist: [],
   forbiddenPathPatterns: [],
   timeoutMs: 30 * 60 * 1000,
+  adversarialReview: false,
 }

@@ -6,6 +6,8 @@ export const agentModelConfigSchema = v.object({
   baseUrl: v.optional(v.string()),
   apiKey: v.optional(v.string()),
   systemPrompt: v.pipe(v.string(), v.nonEmpty()),
+  maxOutputTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  structuredOutput: v.optional(v.boolean()),
 })
 
 export const projectAgentSettingsSchema = v.object({
@@ -20,4 +22,5 @@ export const projectAgentSettingsSchema = v.object({
   shellAllowlist: v.array(v.string()),
   forbiddenPathPatterns: v.array(v.string()),
   timeoutMs: v.pipe(v.number(), v.integer(), v.minValue(1)),
+  adversarialReview: v.optional(v.boolean(), false),
 })
