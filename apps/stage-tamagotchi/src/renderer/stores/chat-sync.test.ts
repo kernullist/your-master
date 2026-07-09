@@ -360,6 +360,79 @@ describe('useChatSyncStore authority ingest failures', async () => {
     authorityStore.dispose()
   })
 
+  // Internal report (꿀보, chat): a long-reasoning question times out and the
+  // typed question reappears in the input box even though it was accepted.
+  /**
+   * @example
+   * it('acks follower ingest on acceptance without awaiting a slow turn', async () => {
+   *   // follower input stays cleared while the authority keeps reasoning
+   *   // the request resolves well before the 30s dispatchCommand timeout
+   * })
+   */
+  it('acks follower ingest on acceptance without awaiting a slow turn', async () => {
+    // ROOT CAUSE:
+    //
+    // The follower window (pages/chat.vue) dispatches ingest over
+    // dispatchCommand, which rejects after REQUEST_TIMEOUT_MS (30s). The
+    // authority only responded after the FULL turn finished, but a
+    // long-reasoning turn runs up to TURN_WATCHDOG_MS (180s) > 30s. So the
+    // follower timed out locally and InteractiveArea.handleSend restored the
+    // user's input draft, even though the message was accepted and streaming.
+    //
+    // <before-patch behavior>
+    // handleCommand: await executeIngest(...) then respond(true) // blocks 30s+
+    //
+    // We fixed this by acking the ingest command at the acceptance point (the
+    // user message landed in history) instead of turn completion.
+    // <after-patch behavior>
+    // handleIngestCommand: respond(true,{ingestAccepted}) once accepted; the
+    // turn keeps running and streams to the follower via broadcasts.
+
+    let releaseTurn = () => {}
+    const turnGate = new Promise<void>((resolve) => {
+      releaseTurn = resolve
+    })
+    // The turn accepts immediately (user message lands) but keeps running far
+    // longer than REQUEST_TIMEOUT_MS, simulating heavy reasoning.
+    mockState.ingest.mockImplementationOnce(async (text: string, _options: unknown, sessionId?: string) => {
+      const targetSessionId = sessionId ?? mockState.activeSessionId.value
+      mockState.sessionMessages.value[targetSessionId] = [
+        ...(mockState.sessionMessages.value[targetSessionId] ?? []),
+        {
+          role: 'user',
+          content: text,
+        },
+      ]
+      await turnGate
+    })
+
+    setActivePinia(createPinia())
+    const authorityStore = useChatSyncStore()
+    authorityStore.initialize('authority')
+
+    setActivePinia(createPinia())
+    const followerStore = useChatSyncStore()
+    followerStore.initialize('follower')
+
+    // Resolves on acceptance; without the fix this would hang until the turn
+    // finishes (turnGate is still pending here) and then reject at 30s.
+    await expect(followerStore.requestIngest({
+      text: 'why is the sky blue, think hard',
+      sessionId: 'session-1',
+    })).resolves.toBeUndefined()
+
+    const persisted = mockState.sessionMessages.value['session-1']
+    expect(persisted.at(-1)).toEqual({ role: 'user', content: 'why is the sky blue, think hard' })
+    expect(persisted.some(message => message.role === 'error')).toBe(false)
+
+    // Let the simulated turn complete cleanly before teardown.
+    releaseTurn()
+    await turnGate
+
+    followerStore.dispose()
+    authorityStore.dispose()
+  })
+
   /**
    * @example
    * it('formats tool and model failures for users', () => {

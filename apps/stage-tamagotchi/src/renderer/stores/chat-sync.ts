@@ -609,6 +609,67 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       })
   }
 
+  /**
+   * Resolves once an ingest turn's user message lands in session history
+   * (acceptance), without waiting for the full turn to finish.
+   *
+   * Use when:
+   * - Acknowledging an ingest command to a follower window. The follower
+   *   renders the streamed reply through stream-snapshot broadcasts and must
+   *   not block on the (possibly multi-minute) LLM turn, otherwise the 30s
+   *   `dispatchCommand` timeout fires on slow-reasoning answers and the caller
+   *   wrongly restores the user's input draft.
+   *
+   * Expects:
+   * - `turn` is the in-flight {@link executeIngest} promise.
+   * - `snapshot` was captured via {@link createIngestAcceptanceSnapshot} before
+   *   the turn started, so message-count drift is measured from the right base.
+   *
+   * Returns:
+   * - `true` as soon as the user message is observed in history (accepted).
+   * - `false` if the turn settles (resolve or reject) before acceptance, e.g. a
+   *   provider misconfiguration thrown before any append — a genuine delivery
+   *   failure the caller should propagate.
+   */
+  function waitForIngestAcceptance(snapshot: IngestAcceptanceSnapshot, turn: Promise<void>): Promise<boolean> {
+    // Fast path: the message already landed (e.g. a synchronous turn).
+    if (hasAcceptedIngestPayload(snapshot))
+      return Promise.resolve(true)
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false
+      let stop = () => {}
+      const finish = (accepted: boolean) => {
+        if (settled)
+          return
+
+        settled = true
+        stop()
+        resolve(accepted)
+      }
+
+      // Watch authoritative history for the user message. flush:'sync' so an
+      // append on the current tick (queue worker) resolves without an extra
+      // scheduler pass. `stop` is assigned before any change can fire because
+      // the watcher is non-immediate and the fast path above already handled
+      // the already-accepted case.
+      stop = watch(
+        () => hasAcceptedIngestPayload(snapshot),
+        (accepted) => {
+          if (accepted)
+            finish(true)
+        },
+        { flush: 'sync' },
+      )
+
+      // If the turn settles before the message lands, it was never accepted.
+      turn.then(
+        () => finish(hasAcceptedIngestPayload(snapshot)),
+        () => finish(hasAcceptedIngestPayload(snapshot)),
+      )
+    })
+  }
+
   async function executeIngest(payload: IngestCommandPayload) {
     const providerId = activeProvider.value
     const modelId = activeModel.value
@@ -839,20 +900,15 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       })
     }
 
-    let ingestAcceptanceSnapshot: IngestAcceptanceSnapshot | undefined
+    // Ingest is acked at the acceptance point (user message landed), not turn
+    // completion, so it has its own flow. See handleIngestCommand.
+    if (message.command === 'ingest') {
+      await handleIngestCommand(message.payload, respond)
+      return
+    }
+
     try {
       switch (message.command) {
-        case 'ingest':
-          ingestAcceptanceSnapshot = createIngestAcceptanceSnapshot(message.payload)
-          if (
-            !await executeLocalTodoWorkItemListRequest(message.payload)
-            && !await executeLocalProjectProgressRequest(message.payload)
-            && !await executeLocalProjectWorkItemStartRequest(message.payload)
-            && !await executeLocalProjectBoardRequest(message.payload)
-          ) {
-            await executeIngest(message.payload)
-          }
-          break
         case 'retry':
           await executeRetry(message.payload)
           break
@@ -867,15 +923,74 @@ export const useChatSyncStore = defineStore('stage-tamagotchi:chat-sync', () => 
       respond(true)
     }
     catch (error) {
+      respond(false, errorMessageFrom(error) ?? 'Unknown chat sync command failure')
+    }
+  }
+
+  /**
+   * Authority-side ingest handler that acknowledges the follower as soon as the
+   * user message is accepted, rather than after the full LLM turn finishes.
+   *
+   * Call stack:
+   *
+   * handleMessage (command) -> {@link handleCommand}
+   *   -> handleIngestCommand
+   *     -> {@link executeIngest} (runs the turn; not awaited for the ack)
+   *     -> {@link waitForIngestAcceptance} (resolves on acceptance)
+   *     -> respond(true, { ingestAccepted })
+   *
+   * Use when:
+   * - A follower window dispatches an `ingest` command. Local shortcuts
+   *   (todo/project) complete fast and ack on completion; the real LLM turn
+   *   acks on acceptance so a slow-reasoning turn cannot trip the follower's
+   *   30s `dispatchCommand` timeout and restore the user's input draft.
+   *
+   * Expects:
+   * - Authority mode (guarded by {@link handleCommand}).
+   *
+   * Returns:
+   * - Nothing; signals the follower through `respond`. Post-acceptance turn
+   *   failures are surfaced to all windows via {@link appendIngestErrorMessage}
+   *   (broadcast through the session snapshot), not the command response.
+   */
+  async function handleIngestCommand(payload: IngestCommandPayload, respond: (ok: boolean, error?: string, options?: { ingestAccepted?: boolean }) => void) {
+    const snapshot = createIngestAcceptanceSnapshot(payload)
+    try {
+      // Fast local shortcuts complete synchronously and need no early-ack.
+      if (
+        await executeLocalTodoWorkItemListRequest(payload)
+        || await executeLocalProjectProgressRequest(payload)
+        || await executeLocalProjectWorkItemStartRequest(payload)
+        || await executeLocalProjectBoardRequest(payload)
+      ) {
+        respond(true)
+        return
+      }
+
+      // Real LLM turn. Start it but do not await completion for the response.
+      const turn = executeIngest(payload)
+      // Surface a post-acceptance failure (watchdog timeout, mid-stream abort)
+      // to every window. Guarded on acceptance so a pre-acceptance failure is
+      // not double-reported here and in the catch below.
+      turn.catch((error) => {
+        if (hasAcceptedIngestPayload(snapshot))
+          appendIngestErrorMessage(payload, errorMessageFrom(error) ?? 'Unknown chat sync command failure')
+      })
+
+      if (await waitForIngestAcceptance(snapshot, turn)) {
+        respond(true, undefined, { ingestAccepted: true })
+        return
+      }
+
+      // The turn settled before the message was accepted. Re-await to recover
+      // the original error (delivery failure) or fall through on a no-op send.
+      await turn
+      respond(true)
+    }
+    catch (error) {
       const errorMessage = errorMessageFrom(error) ?? 'Unknown chat sync command failure'
-      const ingestAccepted = message.command === 'ingest'
-        && ingestAcceptanceSnapshot != null
-        && hasAcceptedIngestPayload(ingestAcceptanceSnapshot)
-
-      if (message.command === 'ingest')
-        appendIngestErrorMessage(message.payload, errorMessage)
-
-      respond(false, errorMessage, ingestAccepted ? { ingestAccepted } : undefined)
+      appendIngestErrorMessage(payload, errorMessage)
+      respond(false, errorMessage)
     }
   }
 
