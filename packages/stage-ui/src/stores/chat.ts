@@ -130,14 +130,24 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const hooks = createChatHooks()
 
   /**
-   * Hard ceiling on one chat turn. A turn normally ends when the LLM stream and
-   * its post-stream hooks finish; if something downstream hangs (a hook awaiting
-   * a dead service, a renderer freeze), performSend never returns, the send
-   * queue worker stays blocked, and the UI is stuck "thinking" forever with no
-   * recovery. The watchdog frees it. Generous so it never fires on a
-   * legitimately slow reasoning model.
+   * Max time one chat turn may make *no progress* before it is force-recovered.
+   * A turn normally ends when the LLM stream and its post-stream hooks finish;
+   * if something downstream hangs (a hook awaiting a dead service, a renderer
+   * freeze), performSend never returns, the send queue worker stays blocked, and
+   * the UI is stuck "thinking" forever with no recovery. The watchdog frees it.
+   *
+   * NOTICE: re-armed on every progress signal (phase transition and stream
+   * event -- see setTurnPhase / bumpStreamIdle), so it measures silence since
+   * the last sign of life, not total turn wall-time. Without this, a local
+   * reasoning model (e.g. Qwen3 *-A3B on LM Studio) that legitimately streams
+   * reasoning tokens for minutes would be aborted mid-answer even though it
+   * never actually hung. The `streaming`-phase silence case is still caught far
+   * sooner by STREAM_IDLE_TIMEOUT_MS. Set generously (5 min) because a single
+   * post-stream hook awaiting a slow local service can legitimately take a
+   * while; it only needs to be short enough that a truly wedged turn recovers
+   * before the user gives up.
    */
-  const TURN_WATCHDOG_MS = 180_000
+  const TURN_WATCHDOG_MS = 300_000
 
   /**
    * Max silence allowed mid-stream before the LLM call is aborted. The overall
@@ -148,8 +158,14 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
    * stream event means a legitimately slow model never trips it; only true
    * silence does. Aborting surfaces a fast, retriable error and keeps any
    * partial reply that already arrived.
+   *
+   * NOTICE: set to 2 min rather than a tighter value because the first token
+   * on a local backend can lag far behind the request: LM Studio / llama.cpp
+   * may load the model on the first call (cold start) and must prefill a large
+   * prompt before emitting anything, and both happen with zero stream events.
+   * A tighter window would abort a healthy cold start before its first token.
    */
-  const STREAM_IDLE_TIMEOUT_MS = 60_000
+  const STREAM_IDLE_TIMEOUT_MS = 120_000
 
   /**
    * Coarse label of what the current turn is doing, updated as performSend
@@ -158,11 +174,18 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
    */
   let currentTurnPhase = 'idle'
 
+  // Set by the active send's queue handler so progress signals (phase changes,
+  // stream events) can re-arm the turn watchdog. Undefined while no send is in
+  // flight; a no-op call is harmless.
+  let bumpTurnWatchdog: (() => void) | undefined
+
   // Records the current turn phase and traces the transition, so a stall is
   // visible in the console immediately (the last phase logged is where it hung)
-  // without waiting for the watchdog to fire.
+  // without waiting for the watchdog to fire. A transition is progress, so it
+  // also re-arms the turn watchdog.
   function setTurnPhase(phase: string) {
     currentTurnPhase = phase
+    bumpTurnWatchdog?.()
     console.info(`[chat] turn phase: ${phase}`)
   }
 
@@ -188,12 +211,23 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         let watchdogFired = false
         let watchdogPhase = ''
         let watchdogTimer: ReturnType<typeof setTimeout> | undefined
-        const watchdog = new Promise<never>((_, reject) => {
+        // Re-armable: any progress signal restarts the timer, so the watchdog
+        // measures silence-since-last-progress rather than total turn time. A
+        // continuously streaming model never trips it; only a phase that makes
+        // no progress for TURN_WATCHDOG_MS does.
+        const armWatchdog = (reject: (error: Error) => void) => {
+          if (watchdogTimer) {
+            clearTimeout(watchdogTimer)
+          }
           watchdogTimer = setTimeout(() => {
             watchdogFired = true
             watchdogPhase = currentTurnPhase
             reject(new Error(`chat turn watchdog timeout: stuck in phase "${watchdogPhase}"`))
           }, TURN_WATCHDOG_MS)
+        }
+        const watchdog = new Promise<never>((_, reject) => {
+          bumpTurnWatchdog = () => armWatchdog(reject)
+          armWatchdog(reject)
         })
 
         try {
@@ -218,6 +252,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
           deferred.reject(error)
         }
         finally {
+          bumpTurnWatchdog = undefined
           if (watchdogTimer) {
             clearTimeout(watchdogTimer)
           }
@@ -551,6 +586,9 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       // paused for the duration; it only guards LLM token silence.
       let pendingToolCalls = 0
       const bumpStreamIdle = () => {
+        // Any stream event is turn progress; keep the overall turn watchdog
+        // alive too so a long-but-healthy generation is not falsely timed out.
+        bumpTurnWatchdog?.()
         if (streamIdleTimer)
           clearTimeout(streamIdleTimer)
         if (pendingToolCalls > 0)
