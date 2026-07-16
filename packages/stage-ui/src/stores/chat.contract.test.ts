@@ -447,4 +447,67 @@ describe('chat orchestrator contract', () => {
     expect(appended.role).toBe('error')
     expect(appended.content).toContain('빈 응답')
   })
+
+  // ROOT CAUSE:
+  //
+  // Reported from local LM Studio testing (Qwen3-A3B): a turn hung for ~5 min
+  // then failed with "멈춘 단계: streaming". The model streamed partial output
+  // then emitted a tool call; xsai (@xsai/stream-text) runs tool execute()
+  // BETWEEN stream steps and only emits the tool-call/tool-result events AFTER
+  // it resolves (dist/index.js:138 `await Promise.all(... executeTool ...)`),
+  // so a tool whose execute() ignores the abort signal (e.g. an MCP/eventa RPC
+  // awaiting a dead runtime) produces total stream silence. The idle-abort
+  // fired but streamAbort.abort() could not interrupt the hung tool, so the
+  // stream promise never settled and `await llmStore.stream(...)` blocked until
+  // the coarse turn watchdog.
+  //
+  // Before patch: performSend awaited the stream promise directly, so an
+  // unsettleable promise held the whole turn until TURN_WATCHDOG_MS.
+  //
+  // We fixed this by racing the stream against a `streamGaveUp` promise that the
+  // idle timer resolves, so the turn recovers at STREAM_IDLE_TIMEOUT_MS with the
+  // partial reply kept, regardless of whether abort is honored downstream.
+  it('gives up mid-stream and keeps the partial reply when the stream promise never settles (hung tool execute)', async () => {
+    getContextsSnapshotMock.mockReturnValue({})
+
+    // NOTICE:
+    // Fake only setTimeout/clearTimeout so the idle timer is controllable while
+    // real microtasks/promises still drive performSend. advanceTimersByTimeAsync
+    // flushes microtasks between timer firings, letting the queued send handler
+    // run and arm the idle timer before we advance past it.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+
+    try {
+      llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, _messages: Message[], options: any) => {
+        // Partial output arrives (reasoning shown in the bubble)...
+        await options.onStreamEvent({ type: 'reasoning-delta', text: 'thinking, will call a tool' })
+        // ...then the tool execute() hangs and never settles: no more events,
+        // and the abort signal is never honored, so this promise stays pending.
+        await new Promise(() => {})
+      })
+
+      const store = useChatOrchestratorStore()
+      const pending = store.ingest('hi', { model: 'gpt-test', chatProvider: provider })
+
+      // Flush microtasks so performSend reaches the stream race and arms the
+      // idle timer, then advance past the idle timeout (120s) but well short of
+      // the turn watchdog (300s): recovery must come from the idle give-up.
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.advanceTimersByTimeAsync(120_000 + 5000)
+      await pending
+
+      const appended = sessionMessages['session-1'].at(-1)
+      expect(appended.role).toBe('assistant')
+      // Partial reasoning that already arrived is preserved.
+      expect(appended.categorization.reasoning).toBe('thinking, will call a tool')
+      // A visible, retriable notice slice is appended instead of vanishing.
+      const noticeSlice = appended.slices.find((slice: any) => slice.type === 'text' && slice.text.includes('응답 도중 멈춰서'))
+      expect(noticeSlice).toBeTruthy()
+      // The UI is unstuck without waiting for the turn watchdog.
+      expect(store.sending).toBe(false)
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
 })

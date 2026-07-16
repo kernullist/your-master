@@ -581,10 +581,34 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       const streamAbort = new AbortController()
       let streamIdleAborted = false
       let streamIdleTimer: ReturnType<typeof setTimeout> | undefined
-      // While a tool call is executing the stream is legitimately silent (the
-      // tool may even be awaiting the user's approval), so the idle timer is
-      // paused for the duration; it only guards LLM token silence.
+      // Pauses the idle timer between the tool-call and tool-result events so a
+      // brief legitimate silence there does not trip it.
+      // NOTICE: xsai emits both events back-to-back AFTER executeTool already
+      // resolved, so this window is near-instant and does NOT cover the real
+      // tool-execution hang -- that is handled by the streamGaveUp race above.
       let pendingToolCalls = 0
+      // Resolved when the idle timer gives up on the stream. We race the stream
+      // against this so the turn proceeds even if the underlying stream promise
+      // never settles.
+      //
+      // NOTICE:
+      // xsai runs tool execute() BETWEEN stream steps and only emits the
+      // tool-call / tool-result events AFTER it resolves (see node_modules
+      // @xsai/stream-text dist/index.js:138 `await Promise.all(... executeTool
+      // ...)` then :154 pushEvent). So while a tool is executing there are zero
+      // stream events, and a tool whose execute() ignores the abort signal
+      // (e.g. an MCP/eventa RPC awaiting a dead runtime) is NOT interrupted by
+      // streamAbort.abort() -- the stream promise stays pending and the turn
+      // would otherwise hang until the coarse turn watchdog (observed as a
+      // ~5min "stuck in phase streaming" with local models). Resolving this
+      // give-up lets us end the turn at STREAM_IDLE_TIMEOUT_MS, keeping the
+      // partial reply, regardless of whether abort is honored downstream.
+      // Removal condition: once xsai surfaces per-tool execution timeouts / the
+      // abort signal reliably rejects executeTool for all provider tools.
+      let resolveStreamGaveUp: (() => void) | undefined
+      const streamGaveUp = new Promise<void>((resolve) => {
+        resolveStreamGaveUp = resolve
+      })
       const bumpStreamIdle = () => {
         // Any stream event is turn progress; keep the overall turn watchdog
         // alive too so a long-but-healthy generation is not falsely timed out.
@@ -596,120 +620,147 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
         streamIdleTimer = setTimeout(() => {
           streamIdleAborted = true
           streamAbort.abort()
+          // Unblock the turn even if abort is not honored downstream (a hung
+          // tool execute()); the abandoned stream promise is caught below.
+          resolveStreamGaveUp?.()
         }, STREAM_IDLE_TIMEOUT_MS)
       }
       bumpStreamIdle()
-      try {
-        await llmStore.stream(options.model, options.chatProvider, newMessages as Message[], {
-          headers,
-          tools: options.tools,
-          abortSignal: streamAbort.signal,
-          // NOTICE: xsai stream may emit `finish` before tool steps continue, so keep waiting until
-          // the final non-tool finish to avoid ending the chat turn with no assistant reply.
-          waitForTools: true,
-          onStreamEvent: async (event: StreamEvent) => {
+      // Kept as a handle so the idle give-up race can abandon it. A separate
+      // no-op catch prevents an unhandled rejection if the abandoned call
+      // rejects later (the awaited race below still observes real errors).
+      const streamPromise = llmStore.stream(options.model, options.chatProvider, newMessages as Message[], {
+        headers,
+        tools: options.tools,
+        abortSignal: streamAbort.signal,
+        // NOTICE: xsai stream may emit `finish` before tool steps continue, so keep waiting until
+        // the final non-tool finish to avoid ending the chat turn with no assistant reply.
+        waitForTools: true,
+        onStreamEvent: async (event: StreamEvent) => {
+          // Once we have given up on this stream (idle-abort fired), ignore
+          // any late events from the abandoned call so they cannot re-arm the
+          // idle timer or mutate the UI for an already-finished turn.
+          if (streamIdleAborted)
+            return
             // Track in-flight tool calls so the idle timer pauses during tool
             // execution, then reset it: any event means the model is alive.
-            if (event.type === 'tool-call')
-              pendingToolCalls += 1
-            else if (event.type === 'tool-result' || event.type === 'tool-error')
-              pendingToolCalls = Math.max(0, pendingToolCalls - 1)
-            bumpStreamIdle()
-            switch (event.type) {
-              case 'tool-call':
-                toolCallQueue.enqueue({
-                  type: 'tool-call',
-                  toolCall: event,
+          if (event.type === 'tool-call')
+            pendingToolCalls += 1
+          else if (event.type === 'tool-result' || event.type === 'tool-error')
+            pendingToolCalls = Math.max(0, pendingToolCalls - 1)
+          bumpStreamIdle()
+          switch (event.type) {
+            case 'tool-call':
+              toolCallQueue.enqueue({
+                type: 'tool-call',
+                toolCall: event,
+              })
+
+              break
+            case 'tool-result':
+              toolCallQueue.enqueue({
+                type: 'tool-call-result',
+                id: event.toolCallId,
+                result: event.result,
+              })
+
+              break
+            case 'tool-error':
+              toolCallQueue.enqueue({
+                type: 'tool-call-result',
+                id: event.toolCallId,
+                isError: true,
+                result: event.result,
+              })
+              {
+                const notice = formatToolFailureNotice(event.result)
+                fullText += notice
+                buildingMessage.content += notice
+                buildingMessage.slices.push({
+                  type: 'text',
+                  text: notice,
                 })
+                updateUI()
+              }
 
-                break
-              case 'tool-result':
-                toolCallQueue.enqueue({
-                  type: 'tool-call-result',
-                  id: event.toolCallId,
-                  result: event.result,
+              break
+            case 'reasoning-delta':
+              // Reasoning counts as the model's first output for TTFT:
+              // reasoning models can think for tens of seconds before the
+              // first content token, and the turn is not "silent" anymore.
+              if (!llmFirstTokenEmitted) {
+                llmFirstTokenEmitted = true
+                llmSpan.addEvent(IOEvents.LLMFirstToken, {
+                  [IOAttributes.LLM_TTFT]: performance.now() - llmRequestTs,
                 })
-
-                break
-              case 'tool-error':
-                toolCallQueue.enqueue({
-                  type: 'tool-call-result',
-                  id: event.toolCallId,
-                  isError: true,
-                  result: event.result,
+              }
+              nativeReasoning += event.text
+              reasoningCharsSinceUiFlush += event.text.length
+              buildingMessage.categorization = {
+                speech: buildingMessage.categorization?.speech ?? '',
+                reasoning: nativeReasoning,
+              }
+              // Reasoning chunks arrive per-token; cloning the streaming
+              // message every chunk is wasteful, so flush in ~48-char steps.
+              if (reasoningCharsSinceUiFlush >= 48) {
+                reasoningCharsSinceUiFlush = 0
+                updateUI()
+              }
+              break
+            case 'text-delta':
+              if (!llmFirstTokenEmitted) {
+                llmFirstTokenEmitted = true
+                llmSpan.addEvent(IOEvents.LLMFirstToken, {
+                  [IOAttributes.LLM_TTFT]: performance.now() - llmRequestTs,
                 })
-                {
-                  const notice = formatToolFailureNotice(event.result)
-                  fullText += notice
-                  buildingMessage.content += notice
-                  buildingMessage.slices.push({
-                    type: 'text',
-                    text: notice,
-                  })
-                  updateUI()
-                }
+              }
+              fullText += event.text
+              await parser.consume(event.text)
+              break
+            case 'finish':
+              break
+            case 'error':
+              throw event.error ?? new Error('Stream error')
+          }
+        },
+      })
 
-                break
-              case 'reasoning-delta':
-                // Reasoning counts as the model's first output for TTFT:
-                // reasoning models can think for tens of seconds before the
-                // first content token, and the turn is not "silent" anymore.
-                if (!llmFirstTokenEmitted) {
-                  llmFirstTokenEmitted = true
-                  llmSpan.addEvent(IOEvents.LLMFirstToken, {
-                    [IOAttributes.LLM_TTFT]: performance.now() - llmRequestTs,
-                  })
-                }
-                nativeReasoning += event.text
-                reasoningCharsSinceUiFlush += event.text.length
-                buildingMessage.categorization = {
-                  speech: buildingMessage.categorization?.speech ?? '',
-                  reasoning: nativeReasoning,
-                }
-                // Reasoning chunks arrive per-token; cloning the streaming
-                // message every chunk is wasteful, so flush in ~48-char steps.
-                if (reasoningCharsSinceUiFlush >= 48) {
-                  reasoningCharsSinceUiFlush = 0
-                  updateUI()
-                }
-                break
-              case 'text-delta':
-                if (!llmFirstTokenEmitted) {
-                  llmFirstTokenEmitted = true
-                  llmSpan.addEvent(IOEvents.LLMFirstToken, {
-                    [IOAttributes.LLM_TTFT]: performance.now() - llmRequestTs,
-                  })
-                }
-                fullText += event.text
-                await parser.consume(event.text)
-                break
-              case 'finish':
-                break
-              case 'error':
-                throw event.error ?? new Error('Stream error')
-            }
-          },
-        })
+      // Prevent an unhandled rejection if the idle give-up race abandons this
+      // promise and the hung call rejects only later; the awaited race below
+      // still observes real errors on the not-abandoned path.
+      void streamPromise.catch(() => {})
 
+      try {
+        // Race the stream against the idle give-up so a stream promise that
+        // never settles (hung tool execute() ignoring abort) cannot hold the
+        // turn until the coarse turn watchdog. Winning via streamGaveUp leaves
+        // the abandoned stream running, but its late events are ignored (see
+        // the streamIdleAborted guard in onStreamEvent).
+        await Promise.race([streamPromise, streamGaveUp])
         llmSpan.setAttribute(IOAttributes.LLMTextLength, fullText.length)
       }
       catch (error) {
-        // Swallow our own idle-abort so the partial reply is still persisted and
-        // the turn ends gracefully; rethrow any other stream error unchanged.
+        // Rethrow anything that is not our own idle-abort; the idle path keeps
+        // the partial reply, handled once after the finally below.
         if (!streamIdleAborted)
           throw error
-
-        console.warn(`[chat] stream idle-aborted after ${STREAM_IDLE_TIMEOUT_MS}ms of silence; keeping partial reply.`)
-        const notice = '\n\n(모델이 응답 도중 멈춰서 중단했어. 다시 시도해줘.)'
-        fullText += notice
-        buildingMessage.content += notice
-        buildingMessage.slices.push({ type: 'text', text: notice })
       }
       finally {
         if (streamIdleTimer)
           clearTimeout(streamIdleTimer)
         // TODO: Record errors on llmSpan
         llmSpan.end()
+      }
+
+      // Idle give-up: the stream either rejected via our abort, or its promise
+      // never settled and streamGaveUp won the race. Either way keep whatever
+      // partial reply already arrived and tell the user, once.
+      if (streamIdleAborted) {
+        console.warn(`[chat] stream idle-aborted after ${STREAM_IDLE_TIMEOUT_MS}ms of silence; keeping partial reply.`)
+        const notice = '\n\n(모델이 응답 도중 멈춰서 중단했어. 다시 시도해줘.)'
+        fullText += notice
+        buildingMessage.content += notice
+        buildingMessage.slices.push({ type: 'text', text: notice })
       }
 
       setTurnPhase('persist')
