@@ -16,6 +16,7 @@ import { useAnalytics } from '../composables'
 import { useLlmmarkerParser } from '../composables/llm-marker-parser'
 import { categorizeResponse, createStreamingCategorizer } from '../composables/response-categoriser'
 import { activeTurnSpan, startSpan } from '../composables/use-io-tracer'
+import { cloneDeepSafe } from '../utils/clone'
 import { formatContextPromptText } from './chat/context-prompt'
 import { createMinecraftContext } from './chat/context-providers'
 import { useChatContextStore } from './chat/context-store'
@@ -56,14 +57,8 @@ function prependTextToContent<T extends { content?: unknown }>(msg: T, text: str
   return msg
 }
 
-function cloneStreamingMessage(message: StreamingAssistantMessage): StreamingAssistantMessage {
-  try {
-    return structuredClone(message)
-  }
-  catch {
-    return JSON.parse(JSON.stringify(message)) as StreamingAssistantMessage
-  }
-}
+// NOTICE: previously an inline structuredClone-with-JSON-fallback helper
+// (cloneStreamingMessage); replaced by the shared reactivity-safe clone util.
 
 function formatToolFailureNotice(error: unknown): string {
   const message = errorMessageFrom(error) ?? (typeof error === 'string' ? error : JSON.stringify(error))
@@ -322,7 +317,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
     const updateUI = () => {
       if (isForegroundSession()) {
-        streamingMessage.value = cloneStreamingMessage(buildingMessage)
+        streamingMessage.value = cloneDeepSafe(buildingMessage)
       }
     }
 
@@ -484,8 +479,14 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
       }
 
       const newMessages = historyWindow.messages.map((msg) => {
-        const { context: _context, id: _id, createdAt, ...withoutContext } = msg
-        const rawMessage = toRaw(withoutContext)
+        // toRaw BEFORE destructuring: session history is deep-reactive, so
+        // rest-spreading the proxy itself yields a plain object whose nested
+        // values (e.g. an image attachment's `content` parts array) are still
+        // reactive Proxies, and structuredClone rejects Proxies downstream
+        // (context-bridge stream hooks) with DataCloneError "# could not be
+        // cloned". Destructuring from the raw target keeps the composed
+        // message plain all the way down.
+        const { context: _context, id: _id, createdAt, ...rawMessage } = toRaw(msg)
         const ts = createdAt ?? nowTs
 
         if (rawMessage.role === 'user') {
@@ -494,7 +495,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
         if (rawMessage.role === 'assistant') {
           const { slices: _slices, tool_results: _toolResults, categorization: _categorization, ...rest } = rawMessage as ChatAssistantMessage
-          return prependTextToContent(toRaw(rest), formatTimePrefix(ts))
+          return prependTextToContent(rest, formatTimePrefix(ts))
         }
 
         return rawMessage

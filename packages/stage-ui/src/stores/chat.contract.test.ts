@@ -3,7 +3,7 @@ import type { Message } from '@xsai/shared-chat'
 
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
 
 import { useChatOrchestratorStore } from './chat'
 
@@ -509,5 +509,64 @@ describe('chat orchestrator contract', () => {
     finally {
       vi.useRealTimers()
     }
+  })
+
+  // ROOT CAUSE:
+  //
+  // Pasting an image into the tamagotchi chat failed the whole turn with
+  // "Failed to execute 'structuredClone' on 'Window': # could not be cloned."
+  // Session history lives in a deep-reactive Vue ref, so messages read back
+  // from it are Proxies. performSend's compose step destructured the message
+  // FIRST and only then called toRaw on the resulting rest object:
+  //
+  //   const { context, id, createdAt, ...withoutContext } = msg
+  //   const rawMessage = toRaw(withoutContext) // no-op: already a plain object
+  //
+  // The rest object is a fresh plain object (toRaw does nothing), but its
+  // nested values were read through the reactive proxy, so an array `content`
+  // (only present for image attachments — text content is a string) stayed a
+  // reactive Proxy inside `composedMessage`. The context-bridge stream hooks
+  // then call structuredClone on that context, and structuredClone rejects
+  // Proxies with DataCloneError ("#" is how Chromium prints a Proxy).
+  //
+  // We fixed this by destructuring from toRaw(msg) so nested values are read
+  // from the raw target, keeping composed messages structured-clone-safe.
+  it('composes structured-clone-safe messages when reactive session history holds an image attachment', async () => {
+    getContextsSnapshotMock.mockReturnValue({})
+
+    // Mirror the real session store: messages are stored in a deep-reactive
+    // container, so anything read back out of it is a reactive Proxy.
+    sessionMessages['session-1'] = reactive([
+      { role: 'system', content: 'system prompt', createdAt: 1, id: 'system' },
+    ])
+
+    let composedMessages: Message[] = []
+    let hookContext: any
+    llmStreamMock.mockImplementation(async (_model: string, _chatProvider: ChatProvider, messages: Message[], options: any) => {
+      composedMessages = messages
+      await options.onStreamEvent({ type: 'text-delta', text: 'nice image' })
+      await options.onStreamEvent({ type: 'finish', finishReason: 'stop' })
+    })
+
+    const store = useChatOrchestratorStore()
+    store.onBeforeSend(async (_message, context) => {
+      hookContext = context
+    })
+
+    await store.ingest('what is in this image?', {
+      model: 'gpt-test',
+      chatProvider: provider,
+      attachments: [{ type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' }],
+    })
+
+    const userMessage = composedMessages.find(message => message.role === 'user') as any
+    expect(userMessage).toBeTruthy()
+    expect(Array.isArray(userMessage.content)).toBe(true)
+    expect(userMessage.content.some((part: any) => part.type === 'image_url')).toBe(true)
+
+    // The context-bridge hooks structuredClone the hook context (composed
+    // message included) before broadcasting; a Proxy anywhere inside throws.
+    expect(() => structuredClone(composedMessages)).not.toThrow()
+    expect(() => structuredClone(hookContext.composedMessage)).not.toThrow()
   })
 })
