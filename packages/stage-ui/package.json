@@ -35,7 +35,6 @@
     "./stores/analytics/posthog": "./src/stores/analytics/posthog.ts",
     "./stores/analytics/privacy-policy": "./src/stores/analytics/privacy-policy.ts",
     "./stores/character": "./src/stores/character/index.ts",
-    "./stores/character/orchestrator/spark-notify-agent": "./src/stores/character/orchestrator/spark-notify-agent.ts",
     "./stores/settings/analytics": "./src/stores/settings/analytics.ts",
     "./stores/settings": "./src/stores/settings/index.ts",
     "./stores/modules/vision": "./src/stores/modules/vision/index.ts",

@@ -91,6 +91,8 @@ const copyText = computed(() => getChatHistoryItemCopyText(props.message as Chat
         variant="ghost"
         shape="square"
         icon="i-solar:refresh-bold"
+        :aria-label="retryLabel"
+        :title="retryLabel"
         @click="emit('retry')"
       />
     </div>

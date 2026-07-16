@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { cwd } from 'node:process'
 
 import Vue from '@vitejs/plugin-vue'
+import Info from 'unplugin-info/vite'
 
 import { playwright } from '@vitest/browser-playwright'
 import { loadEnv } from 'vite'
@@ -24,6 +25,11 @@ export default defineConfig(({ mode }) => {
           extends: true,
           plugins: [
             Vue(),
+            // Provides the ~build/* virtual modules (git/time metadata) that
+            // `composables/use-build-info.ts` imports; the apps register the
+            // same plugin in their Vite configs, and without it any browser
+            // test that touches the composables barrel fails to import.
+            Info(),
           ],
           test: {
             name: 'browser',
