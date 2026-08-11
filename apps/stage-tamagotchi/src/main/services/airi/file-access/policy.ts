@@ -3,7 +3,7 @@
  * `electron` imports so they stay unit-testable in plain Node.
  */
 
-import { isAbsolute, normalize } from 'node:path'
+import { isAbsolute, normalize, sep } from 'node:path'
 
 /**
  * Maximum bytes returned by a single read. Large-but-reasonable for source
@@ -73,24 +73,145 @@ export function validateRequestPath(rawPath: string): string | undefined {
  * Returns:
  * - An error message naming the blocked root, or undefined when writable.
  */
-export function writeBlockReason(absolutePath: string): string | undefined {
-  // NOTICE:
-  // Windows strips trailing dots and spaces from each path component at the
-  // filesystem layer, so "C:\Windows.\System32\x" and "C:\Windows \..." resolve
-  // into the real C:\Windows, but node:path.normalize preserves them verbatim —
-  // a prefix-only check would be bypassed. Strip per-component trailing dots/
-  // spaces before comparing. (Symlink/junction and 8.3-shortname evasion are
-  // still possible; this denylist is a best-effort guard behind the approval
-  // dialog, not a hard boundary.)
-  const stripped = normalize(absolutePath)
-    .split(/[/\\]/)
-    .map(segment => segment.replace(/[.\s]+$/, ''))
-    .join('\\')
-    .toLowerCase()
+/**
+ * Canonicalizes an absolute path for containment / denylist comparisons.
+ *
+ * Before:
+ * - "C:\\Users\\me\\Projects\\..\\Notes\\"
+ * - "C:\\Windows.\\System32\\x"
+ *
+ * After (win32):
+ * - "c:\\users\\me\\notes"
+ * - "c:\\windows\\system32\\x"
+ *
+ * NOTICE:
+ * Windows strips trailing dots and spaces from each path component at the
+ * filesystem layer, so "C:\Windows.\System32\x" and "C:\Windows \..." resolve
+ * into the real C:\Windows, but node:path.normalize preserves them verbatim —
+ * a prefix-only check would be bypassed. Strip per-component trailing dots/
+ * spaces before comparing. (Symlink/junction and 8.3-shortname evasion are
+ * still possible at this layer; callers that need a hard boundary should also
+ * realpath the target.)
+ */
+export function normalizePathKey(absolutePath: string): string {
+  const isWin = process.platform === 'win32'
+  let normalized = normalize(absolutePath)
 
-  const blocked = WRITE_BLOCKED_PREFIXES.find(prefix => stripped.startsWith(prefix))
+  if (isWin) {
+    normalized = normalized
+      .split(/[/\\]/)
+      .map(segment => segment.replace(/[.\s]+$/, ''))
+      .join('\\')
+      .toLowerCase()
+  }
+
+  // Drop a trailing separator so "C:\foo\" and "C:\foo" compare equal, but keep
+  // drive/root forms like "C:\" (length 3 on Windows) and "/".
+  if (normalized.length > 1 && (normalized.endsWith('\\') || normalized.endsWith('/'))) {
+    const withoutTrailing = normalized.slice(0, -1)
+    // Keep "C:" from becoming a bare drive letter without root meaning —
+    // normalize already yields "C:\" for the drive root on Windows.
+    if (!isWin || !/^[a-z]:$/i.test(withoutTrailing)) {
+      normalized = withoutTrailing
+    }
+  }
+
+  return normalized
+}
+
+export function writeBlockReason(absolutePath: string): string | undefined {
+  const stripped = normalizePathKey(absolutePath)
+  // write-block list is authored with Windows-style lower-case prefixes.
+  const blocked = WRITE_BLOCKED_PREFIXES.find((prefix) => {
+    return stripped === prefix || stripped.startsWith(`${prefix}\\`) || stripped.startsWith(`${prefix}/`)
+  })
   if (blocked) {
     return `writes under "${blocked}" are blocked for safety`
+  }
+
+  return undefined
+}
+
+/**
+ * Whether `targetPath` equals or is nested under any of the registered free-
+ * access roots (folder or file paths).
+ *
+ * Use when:
+ * - Deciding if a write/edit may skip the approval dialog.
+ * - Validating that a path the user is registering is not already covered.
+ *
+ * Expects:
+ * - Absolute paths (already validated by {@link validateRequestPath}).
+ * - Roots that are themselves absolute free-access registrations.
+ *
+ * Returns:
+ * - true when the target is the root itself or a descendant (separator-bounded).
+ */
+export function isPathWithinRoots(targetPath: string, roots: readonly string[]): boolean {
+  if (roots.length === 0) {
+    return false
+  }
+
+  const target = normalizePathKey(targetPath)
+  for (const root of roots) {
+    const rootKey = normalizePathKey(root)
+    if (!rootKey) {
+      continue
+    }
+    if (target === rootKey) {
+      return true
+    }
+    // Separator-bounded prefix so "C:\proj" does not match "C:\project".
+    const boundary = rootKey.endsWith(sep) ? rootKey : `${rootKey}${sep}`
+    // On Windows, free roots are stored with `\` after normalizePathKey; also
+    // accept `/` boundaries from mixed input.
+    const altBoundary = boundary.replaceAll('\\', '/')
+    if (target.startsWith(boundary) || target.startsWith(altBoundary)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/**
+ * Validates a path the user wants to register as free-access.
+ *
+ * Use when:
+ * - Settings UI / IPC adds a free-access folder before persisting it.
+ *
+ * Expects:
+ * - Any user-supplied string (absolute directory preferred).
+ *
+ * Returns:
+ * - An error message, or undefined when the path may be registered.
+ */
+export function validateFreeAccessPath(rawPath: string): string | undefined {
+  const invalid = validateRequestPath(rawPath)
+  if (invalid) {
+    return invalid
+  }
+
+  const blocked = writeBlockReason(rawPath)
+  if (blocked) {
+    return blocked
+  }
+
+  // Refuse registering a whole drive root (C:\) as free-write — too broad.
+  const trimmed = rawPath.trim()
+  const key = normalizePathKey(trimmed)
+  if (process.platform === 'win32') {
+    // Covers "C:", "C:\", "C:/", and normalize edge cases like "C." / "c".
+    if (
+      /^[a-z]:[/\\]?$/i.test(trimmed)
+      || /^[a-z]:\\?$/i.test(key)
+      || /^[a-z]$/i.test(key)
+    ) {
+      return 'registering a whole drive root as free-access is not allowed'
+    }
+  }
+  if (key === '/' || key === '\\') {
+    return 'registering the filesystem root as free-access is not allowed'
   }
 
   return undefined

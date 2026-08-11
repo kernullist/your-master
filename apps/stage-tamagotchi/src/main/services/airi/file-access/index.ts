@@ -1,6 +1,8 @@
 import type { createContext } from '@moeru/eventa/adapters/electron/main'
 
 import type {
+  ElectronFileFreeAccessMutationResult,
+  ElectronFileFreeAccessPathsResult,
   ElectronFileListResult,
   ElectronFileReadResult,
   ElectronFileWriteResult,
@@ -15,19 +17,25 @@ import { defineInvokeHandler } from '@moeru/eventa'
 import { BrowserWindow, dialog } from 'electron'
 
 import {
+  electronFilesAddFreeAccessPath,
   electronFilesEdit,
+  electronFilesGetFreeAccessPaths,
   electronFilesList,
   electronFilesRead,
+  electronFilesRemoveFreeAccessPath,
   electronFilesSearch,
   electronFilesWrite,
 } from '../../../../shared/eventa'
+import { createFreeAccessStore } from './free-access-store'
 import {
   applyStringEdit,
   buildLineDiff,
   buildWritePreview,
   FILE_LIST_MAX_ENTRIES,
   FILE_READ_MAX_BYTES,
+  isPathWithinRoots,
   isProbablyBinary,
+  validateFreeAccessPath,
   validateRequestPath,
   writeBlockReason,
 } from './policy'
@@ -44,24 +52,28 @@ import {
 } from './search'
 
 /**
- * Local file access service: free reads/lists, user-approved writes.
+ * Local file access service: free reads/lists, user-approved writes unless the
+ * target sits under a Settings-registered free-access path.
  *
- * Every write shows a native dialog on the owning window with the target
- * path and a content preview; the default button is "deny" so an accidental
- * Enter never approves a modification.
+ * Every write outside free-access roots shows a native dialog on the owning
+ * window with the target path and a content preview; the default button is
+ * "deny" so an accidental Enter never approves a modification. Free-access
+ * paths skip the dialog but still keep a `.airi-bak` backup and still honor
+ * the OS/program write blocklist.
  *
  * Call stack:
  *
  * setupMainWindowElectronInvokes / setupChatWindowElectronInvokes (../../../windows)
  *   -> {@link createFileAccessService}
  *     -> {@link electronFilesRead} / {@link electronFilesList} / {@link electronFilesWrite}
- *       -> policy checks ({@link validateRequestPath}, {@link writeBlockReason})
- *         -> dialog.showMessageBox (writes only)
+ *       -> policy checks ({@link validateRequestPath}, {@link writeBlockReason}, free-access roots)
+ *         -> dialog.showMessageBox (writes outside free-access only)
  */
 export function createFileAccessService(params: {
   context: ReturnType<typeof createContext>['context']
 }) {
   const log = useLogg('main/file-access').useGlobalConfig()
+  const freeAccess = createFreeAccessStore()
 
   /**
    * Resolves a path to its real on-disk location for the write blocklist check,
@@ -93,6 +105,20 @@ export function createFileAccessService(params: {
       }
     }
     return requestPath
+  }
+
+  /**
+   * Whether a write/edit at `requestPath` may skip the approval dialog because
+   * the real path (or nearest existing ancestor) sits under a free-access root.
+   */
+  async function isFreeAccessWrite(requestPath: string): Promise<boolean> {
+    const roots = freeAccess.getPaths()
+    if (roots.length === 0) {
+      return false
+    }
+
+    const resolved = await resolveForBlockCheck(requestPath)
+    return isPathWithinRoots(resolved, roots) || isPathWithinRoots(requestPath, roots)
   }
 
   defineInvokeHandler(params.context, electronFilesRead, async (payload): Promise<ElectronFileReadResult> => {
@@ -156,28 +182,32 @@ export function createFileAccessService(params: {
     }
   })
 
-  // Shared approval + backup + write path for both full writes and edits.
-  // `detail` is the dialog body (content preview or diff). Returns the tool
-  // result; nothing is written unless the user explicitly approves.
+  /**
+   * Writes content after optional user approval. Free-access targets skip the
+   * dialog; everything else requires an explicit Approve click.
+   */
   async function confirmAndWrite(requestPath: string, nextContent: string, exists: boolean, detail: string): Promise<ElectronFileWriteResult> {
-    const parent = BrowserWindow.getFocusedWindow() ?? undefined
-    const dialogOptions = {
-      type: 'warning' as const,
-      title: 'AIRI file modification request',
-      message: `AIRI wants to modify a file:\n${requestPath}`,
-      detail,
-      buttons: ['Deny', 'Approve'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true,
-    }
-    const choice = parent
-      ? await dialog.showMessageBox(parent, dialogOptions)
-      : await dialog.showMessageBox(dialogOptions)
+    const free = await isFreeAccessWrite(requestPath)
+    if (!free) {
+      const parent = BrowserWindow.getFocusedWindow() ?? undefined
+      const dialogOptions = {
+        type: 'warning' as const,
+        title: 'AIRI file modification request',
+        message: `AIRI wants to modify a file:\n${requestPath}`,
+        detail,
+        buttons: ['Deny', 'Approve'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      }
+      const choice = parent
+        ? await dialog.showMessageBox(parent, dialogOptions)
+        : await dialog.showMessageBox(dialogOptions)
 
-    if (choice.response !== 1) {
-      log.withFields({ path: requestPath }).log('file write denied by user')
-      return { ok: false, message: 'user denied the modification' }
+      if (choice.response !== 1) {
+        log.withFields({ path: requestPath }).log('file write denied by user')
+        return { ok: false, message: 'user denied the modification' }
+      }
     }
 
     try {
@@ -188,12 +218,17 @@ export function createFileAccessService(params: {
       }
 
       await writeFile(requestPath, nextContent, 'utf-8')
-      log.withFields({ path: requestPath, bytes: Buffer.byteLength(nextContent, 'utf-8') }).log('file write approved and applied')
+      const bytes = Buffer.byteLength(nextContent, 'utf-8')
+      log.withFields({ path: requestPath, bytes, freeAccess: free }).log(free ? 'file write free-access applied' : 'file write approved and applied')
       return {
         ok: true,
-        message: exists
-          ? `file updated (backup saved as ${requestPath}.airi-bak)`
-          : 'file created',
+        message: free
+          ? (exists
+              ? `file updated without prompt (free-access path; backup saved as ${requestPath}.airi-bak)`
+              : 'file created without prompt (free-access path)')
+          : (exists
+              ? `file updated (backup saved as ${requestPath}.airi-bak)`
+              : 'file created'),
       }
     }
     catch (error) {
@@ -382,5 +417,76 @@ export function createFileAccessService(params: {
     }
 
     return { matches, truncated }
+  })
+
+  defineInvokeHandler(params.context, electronFilesGetFreeAccessPaths, async (): Promise<ElectronFileFreeAccessPathsResult> => {
+    return { paths: freeAccess.getPaths() }
+  })
+
+  defineInvokeHandler(params.context, electronFilesAddFreeAccessPath, async (payload): Promise<ElectronFileFreeAccessMutationResult> => {
+    let requestPath = payload?.path?.trim() ?? ''
+
+    if (!requestPath) {
+      const parent = BrowserWindow.getFocusedWindow() ?? undefined
+      const picked = parent
+        ? await dialog.showOpenDialog(parent, {
+            title: 'Choose a free-access folder',
+            properties: ['openDirectory', 'createDirectory'],
+          })
+        : await dialog.showOpenDialog({
+            title: 'Choose a free-access folder',
+            properties: ['openDirectory', 'createDirectory'],
+          })
+
+      if (picked.canceled || !picked.filePaths[0]) {
+        return { ok: false, paths: freeAccess.getPaths(), message: 'folder selection canceled' }
+      }
+      requestPath = picked.filePaths[0]
+    }
+
+    const invalid = validateFreeAccessPath(requestPath)
+    if (invalid) {
+      return { ok: false, paths: freeAccess.getPaths(), message: invalid }
+    }
+
+    // Prefer the real path so junctions cannot expand free-write beyond intent.
+    let resolvedPath = requestPath
+    try {
+      resolvedPath = await realpath(requestPath)
+    }
+    catch {
+      // Not-yet-existing paths can still be registered from manual entry.
+      resolvedPath = requestPath
+    }
+
+    const blocked = writeBlockReason(resolvedPath)
+    if (blocked) {
+      return { ok: false, paths: freeAccess.getPaths(), message: blocked }
+    }
+
+    try {
+      const info = await stat(resolvedPath)
+      if (!info.isDirectory() && !info.isFile()) {
+        return { ok: false, paths: freeAccess.getPaths(), message: 'path must be a file or directory' }
+      }
+    }
+    catch {
+      return { ok: false, paths: freeAccess.getPaths(), message: `path does not exist: ${resolvedPath}` }
+    }
+
+    const result = freeAccess.addPath(resolvedPath)
+    if (result.ok) {
+      log.withFields({ path: result.path ?? resolvedPath }).log('free-access path registered')
+    }
+    return result
+  })
+
+  defineInvokeHandler(params.context, electronFilesRemoveFreeAccessPath, async (payload): Promise<ElectronFileFreeAccessMutationResult> => {
+    const requestPath = payload?.path ?? ''
+    const result = freeAccess.removePath(requestPath)
+    if (result.ok) {
+      log.withFields({ path: requestPath }).log('free-access path removed')
+    }
+    return result
   })
 }

@@ -265,6 +265,36 @@ pages:
   memory:
     description: Where memories got stored, and organized
     title: Memory
+  file-access:
+    title: File access
+    description: Register folders where the model can write files without asking each time
+    sections:
+      free-paths:
+        title: Free-access paths
+        description: >-
+          The model can already read files freely. Paths listed here also allow
+          file_write and file_edit without a confirmation dialog. Prefer project
+          or notes folders — never whole drives or system directories.
+        warning: >-
+          Free-access paths let the model change files without prompting. Only
+          register folders you trust for automated edits. OS and program folders
+          stay blocked even if listed.
+        manual-label: Absolute path
+        manual-description: Paste a full folder path, or use the folder picker.
+        manual-placeholder: e.g. C:\Users\me\Documents\notes
+        empty: No free-access paths yet. Add a project or notes folder to start.
+    actions:
+      add-path: Add path
+      pick-folder: Choose folder
+      remove: Remove
+    messages:
+      added: 'Registered free-access path: {path}'
+      already-covered: '{path} is already covered by a free-access root'
+      removed: 'Removed free-access path: {path}'
+      path-required: Enter an absolute path first
+      add-failed: Could not register the path
+      remove-failed: Could not remove the path
+      load-failed: Could not load free-access paths
   data:
     title: Data
     description: Manage stored AIRI data, exports, and resets

@@ -377,6 +377,45 @@ export interface ElectronFileSearchResult {
 
 export const electronFilesSearch = defineInvokeEventa<ElectronFileSearchResult, { directory: string, query: string, mode?: 'name' | 'content' }>('eventa:invoke:electron:files:search')
 
+/**
+ * Snapshot of folders/files the model may write to without a per-action
+ * approval dialog. Reads stay free everywhere; only writes/edits are gated.
+ */
+export interface ElectronFileFreeAccessPathsResult {
+  /** Absolute free-access paths currently registered. */
+  paths: string[]
+}
+
+/** Result of adding or removing a free-access path. */
+export interface ElectronFileFreeAccessMutationResult {
+  ok: boolean
+  /** Updated free-access path list after the mutation. */
+  paths: string[]
+  /** Human-readable error or status message. */
+  message?: string
+  /** The path that was added, when a pick/add succeeded. */
+  path?: string
+}
+
+/**
+ * List registered free-access paths (model may write without approval under these).
+ */
+export const electronFilesGetFreeAccessPaths = defineInvokeEventa<ElectronFileFreeAccessPathsResult>('eventa:invoke:electron:files:free-access:get')
+
+/**
+ * Register a free-access path.
+ *
+ * Payload:
+ * - `path` (optional): absolute path to add. When omitted, opens a native
+ *   folder picker dialog.
+ */
+export const electronFilesAddFreeAccessPath = defineInvokeEventa<ElectronFileFreeAccessMutationResult, { path?: string } | void>('eventa:invoke:electron:files:free-access:add')
+
+/**
+ * Remove a previously registered free-access path.
+ */
+export const electronFilesRemoveFreeAccessPath = defineInvokeEventa<ElectronFileFreeAccessMutationResult, { path: string }>('eventa:invoke:electron:files:free-access:remove')
+
 export const electronMcpOpenConfigFile = defineInvokeEventa<{ path: string }>('eventa:invoke:electron:mcp:open-config-file')
 export const electronMcpApplyAndRestart = defineInvokeEventa<ElectronMcpStdioApplyResult>('eventa:invoke:electron:mcp:apply-and-restart')
 export const electronMcpGetRuntimeStatus = defineInvokeEventa<ElectronMcpStdioRuntimeStatus>('eventa:invoke:electron:mcp:get-runtime-status')

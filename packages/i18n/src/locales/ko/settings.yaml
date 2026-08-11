@@ -251,6 +251,36 @@ pages:
   memory:
     description: 기억이 저장되고 정리된 곳
     title: 메모리
+  file-access:
+    title: 파일 접근
+    description: 모델이 매번 확인 없이 파일을 쓸 수 있는 폴더를 등록합니다
+    sections:
+      free-paths:
+        title: 자유 접근 경로
+        description: >-
+          모델은 이미 파일을 자유롭게 읽을 수 있습니다. 여기에 등록한 경로에서는
+          file_write / file_edit 시 확인 대화상자가 생략됩니다. 프로젝트·메모 폴더만
+          등록하고, 드라이브 루트나 시스템 폴더는 등록하지 마세요.
+        warning: >-
+          자유 접근 경로에서는 모델이 확인 없이 파일을 수정할 수 있습니다.
+          자동 수정을 허용해도 되는 폴더만 등록하세요. OS/프로그램 폴더는
+          등록해도 쓰기 차단됩니다.
+        manual-label: 절대 경로
+        manual-description: 전체 폴더 경로를 붙여넣거나 폴더 선택 버튼을 사용하세요.
+        manual-placeholder: 예) C:\Users\me\Documents\notes
+        empty: 등록된 자유 접근 경로가 없습니다. 프로젝트나 메모 폴더를 추가하세요.
+    actions:
+      add-path: 경로 추가
+      pick-folder: 폴더 선택
+      remove: 제거
+    messages:
+      added: '자유 접근 경로가 등록되었습니다: {path}'
+      already-covered: '{path} 는 이미 등록된 상위 경로에 포함됩니다'
+      removed: '자유 접근 경로가 제거되었습니다: {path}'
+      path-required: 절대 경로를 먼저 입력하세요
+      add-failed: 경로를 등록하지 못했습니다
+      remove-failed: 경로를 제거하지 못했습니다
+      load-failed: 자유 접근 경로를 불러오지 못했습니다
   data:
     title: 데이터
     description: 저장된 AIRI 데이터, 내보낸 항목, 초기화된 항목 관리

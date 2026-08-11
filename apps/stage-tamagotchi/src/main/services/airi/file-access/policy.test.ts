@@ -5,7 +5,10 @@ import {
   buildLineDiff,
   buildWritePreview,
   DIFF_PREVIEW_MAX_LINES,
+  isPathWithinRoots,
   isProbablyBinary,
+  normalizePathKey,
+  validateFreeAccessPath,
   validateRequestPath,
   WRITE_PREVIEW_MAX_CHARS,
   writeBlockReason,
@@ -53,6 +56,51 @@ describe('writeBlockReason', () => {
   it('allows user directories', () => {
     expect(writeBlockReason('C:\\Users\\me\\Documents\\todo.md')).toBeUndefined()
     expect(writeBlockReason('F:\\kernullist\\notes.txt')).toBeUndefined()
+  })
+})
+
+describe('normalizePathKey / isPathWithinRoots', () => {
+  it('treats case and trailing separators as equal on Windows', () => {
+    if (process.platform !== 'win32') {
+      return
+    }
+    expect(normalizePathKey('C:\\Users\\me\\Notes\\')).toBe(normalizePathKey('c:\\users\\me\\notes'))
+  })
+
+  it('matches a file under a free-access folder with a separator boundary', () => {
+    const roots = ['C:\\Users\\me\\Projects']
+    expect(isPathWithinRoots('C:\\Users\\me\\Projects\\app\\main.ts', roots)).toBe(true)
+    expect(isPathWithinRoots('C:\\Users\\me\\Projects', roots)).toBe(true)
+    // "ProjectsExtra" must NOT match the "Projects" root.
+    expect(isPathWithinRoots('C:\\Users\\me\\ProjectsExtra\\x.ts', roots)).toBe(false)
+    expect(isPathWithinRoots('C:\\Users\\me\\Other\\x.ts', roots)).toBe(false)
+  })
+
+  it('returns false when no roots are registered', () => {
+    expect(isPathWithinRoots('C:\\Users\\me\\a.txt', [])).toBe(false)
+  })
+})
+
+describe('validateFreeAccessPath', () => {
+  it('rejects relative and UNC paths like validateRequestPath', () => {
+    expect(validateFreeAccessPath('notes')).toContain('absolute')
+    expect(validateFreeAccessPath('\\\\server\\share')).toContain('UNC')
+  })
+
+  it('rejects OS / program roots', () => {
+    expect(validateFreeAccessPath('C:\\Windows')).toContain('blocked')
+    expect(validateFreeAccessPath('C:\\Program Files\\App')).toContain('blocked')
+  })
+
+  it('rejects whole drive roots', () => {
+    expect(validateFreeAccessPath('C:\\')).toContain('drive root')
+    // "C:" alone is drive-relative (not absolute) on Windows and is rejected earlier.
+    expect(validateFreeAccessPath('C:')).toBeDefined()
+  })
+
+  it('accepts normal user project folders', () => {
+    expect(validateFreeAccessPath('C:\\Users\\me\\Documents\\notes')).toBeUndefined()
+    expect(validateFreeAccessPath('F:\\kernullist\\your-master')).toBeUndefined()
   })
 })
 

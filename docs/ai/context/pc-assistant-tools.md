@@ -1,8 +1,9 @@
 # PC Assistant Tools (stage-tamagotchi)
 
 Built-in tools that let AIRI act as a local PC assistant, plus recommended MCP
-servers to extend it. All "action" tools (write/execute) are approval-gated;
-reads are free.
+servers to extend it. Reads are free. Writes/executes are approval-gated unless
+the target sits under a **free-access path** registered in
+Settings → File access (writes/edits only; OS/program roots stay blocked).
 
 ## Built-in tools
 
@@ -11,8 +12,8 @@ reads are free.
 | `file_read` | Read a text file by absolute path (512KB cap, binary rejected) | none | `main/services/airi/file-access` |
 | `file_list` | List a directory (name/type/size, 300 cap) | none | `file-access` |
 | `search_files` | Recursively search a folder by filename or text content | none | `file-access` |
-| `file_write` | Create/overwrite a text file with full content (keeps `.airi-bak`) | **dialog** | `file-access` |
-| `file_edit` | Replace an exact unique string in a file; dialog shows a diff (keeps `.airi-bak`) | **dialog (diff)** | `file-access` |
+| `file_write` | Create/overwrite a text file with full content (keeps `.airi-bak`) | **dialog** (skipped under free-access paths) | `file-access` |
+| `file_edit` | Replace an exact unique string in a file; dialog shows a diff (keeps `.airi-bak`) | **dialog (diff)** (skipped under free-access paths) | `file-access` |
 | `run_command` | Run a shell command via cmd.exe (30s timeout, output capped) | **dialog** | `command-exec` |
 | `clipboard_read` | Read clipboard text (16KB cap) | none | `desktop-io` |
 | `clipboard_write` | Replace clipboard text | none | `desktop-io` |
@@ -46,6 +47,24 @@ are registered **once** on a window-less context via
 `main/services/airi/desktop-assistant`; the renderer memory tools call the
 `packages/stage-ui` memory store directly (no IPC — it lives in IndexedDB).
 
+### Free-access paths (Settings → File access)
+
+Users can register absolute folders (or files) where `file_write` / `file_edit`
+skip the approval dialog. Persistence lives in Electron userData as
+`file-access-free-access.json` via `createFreeAccessStore`. Rules:
+
+- Reads/lists/search stay free everywhere (unchanged).
+- Free-access only affects write/edit approval.
+- OS / Program Files / ProgramData writes stay blocked even if registered.
+- Whole drive roots (`C:\`) cannot be registered.
+- Symlink/junction targets are realpath'd before free-access and block checks.
+- Overwrites still write a `.airi-bak` backup.
+- Settings UI: `apps/stage-tamagotchi/src/renderer/pages/settings/file-access.vue`.
+- **Model visibility:** each time tools are resolved, `fileAccessTools()` loads
+  the registered paths and injects them into tool descriptions + parameter
+  hints. When the user says "write a file" without a path, the model is
+  instructed to use the first free-access folder (not Desktop/Documents).
+
 ### Usage examples
 
 What the user can say in chat to trigger each tool:
@@ -56,8 +75,8 @@ What the user can say in chat to trigger each tool:
 | "바탕화면에 뭐 있어?" | `file_list` |
 | "문서 폴더에서 계약서 파일 찾아줘" | `search_files` (name) |
 | "어느 파일에 'API_KEY'가 들어있어?" | `search_files` (content) |
-| "메모.txt 만들고 회의 내용 적어줘" | `file_write` → approval dialog |
-| "config.json에서 port를 8080으로 바꿔줘" | `file_edit` → approval dialog with diff |
+| "메모.txt 만들고 회의 내용 적어줘" | `file_write` → approval dialog (or auto-write under free-access path) |
+| "config.json에서 port를 8080으로 바꿔줘" | `file_edit` → approval dialog with diff (or auto-edit under free-access path) |
 | "메모장 열어줘" / "npm run build 실행해줘" | `run_command` → approval dialog |
 | "방금 복사한 거 정리해줘" | `clipboard_read` |
 | "이 결과 클립보드에 넣어줘" | `clipboard_write` |
